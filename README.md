@@ -316,17 +316,17 @@ inferno server --enable-gguf --gguf-path path/to/any-model-q4_k_m.gguf
 # Auto-downloading GGUF from Hugging Face for any model
 inferno server --model TheBloke/Llama-2-7B-Chat-GGUF --enable-gguf --download-gguf
 
-# Specifying a particular GGUF file to download
-inferno server --model TheBloke/Mistral-7B-Instruct-v0.2-GGUF --enable-gguf --download-gguf --gguf-filename mistral-7b-instruct-v0.2.Q4_K_M.gguf
+# Specifying a particular GGUF file to download (auto-enables download and GGUF support)
+inferno server --model TheBloke/Mistral-7B-Instruct-v0.2-GGUF --gguf-filename mistral-7b-instruct-v0.2.Q4_K_M.gguf
 
 # Run Mixtral models in GGUF format
-inferno server --model TheBloke/Mixtral-8x7B-Instruct-v0.1-GGUF --enable-gguf --download-gguf --gguf-filename mixtral-8x7b-instruct-v0.1.Q4_K_M.gguf
+inferno server --model TheBloke/Mixtral-8x7B-Instruct-v0.1-GGUF --gguf-filename mixtral-8x7b-instruct-v0.1.Q4_K_M.gguf
 
 # Run smaller GGUF models on less powerful hardware
-inferno server --enable-gguf --download-gguf --model TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF --gguf-filename tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf --device cpu
+inferno server --model TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF --gguf-filename tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf --device cpu
 
 # Run Qwen models in GGUF format
-inferno server --enable-gguf --download-gguf --model TheBloke/Qwen1.5-7B-Chat-GGUF --gguf-filename qwen1.5-7b-chat.Q4_K_M.gguf
+inferno server --model TheBloke/Qwen1.5-7B-Chat-GGUF --gguf-filename qwen1.5-7b-chat.Q4_K_M.gguf
 
 # Download a GGUF model directly
 inferno model download TheBloke/Mistral-7B-Instruct-v0.2-GGUF
@@ -403,6 +403,21 @@ inferno server --model meta-llama/Llama-2-7b-chat-hf --api-keys "key1,key2,key3"
 
 # Secure multiple models with the same keys
 inferno server --model mistralai/Mistral-7B-Instruct-v0.2 --additional-models "google/gemma-7b-it" --api-keys "key1,key2,key3"
+
+# Run server as a background daemon process
+inferno server --model mistralai/Mistral-7B-Instruct-v0.2 --daemon
+
+# Run server as a daemon with custom log and PID files
+inferno server --model meta-llama/Llama-2-7b-chat-hf --daemon --daemon-log /path/to/logs/inferno.log --pid-file /path/to/inferno.pid
+
+# Check status of running daemon
+inferno util daemon_status
+
+# List all running Inferno daemon processes
+inferno util daemon_list
+
+# Stop a running daemon
+inferno util daemon_stop
 ```
 
 ## 🛠️ CLI Features
@@ -595,10 +610,13 @@ inferno util benchmark --model mistralai/Mistral-7B-Instruct-v0.2 --num-requests
 --timeout            Timeout for requests in seconds (default: 60)
 --enable-gguf        Enable GGUF model support (requires llama-cpp-python)
 --gguf-path          Path to GGUF model file
---download-gguf      Download GGUF model from Hugging Face (if available)
---gguf-filename      Specific GGUF filename to download (e.g., 'model-q4_k_m.gguf')
+--download-gguf      Download GGUF model from Hugging Face (auto-enabled when --gguf-filename is provided)
+--gguf-filename      Specific GGUF filename to download (auto-enables downloading and GGUF support)
 --num-gpu-layers     Number of GPU layers for GGUF models (-1 means all)
 --context-size       Context size for GGUF models in tokens (default: 4096)
+--daemon, -d         Run server as a background daemon process
+--pid-file           Path to write the daemon process ID
+--daemon-log         Path to write daemon logs (defaults to inferno_daemon.log)
 ```
 
 ## 🖥️ Hardware Recommendations

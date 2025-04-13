@@ -124,8 +124,19 @@ def load_model(config: ServerConfig) -> Tuple[Any, Any, Dict[str, Any]]:
         # Update the TPU memory limit in the config
         config.tpu_memory_limit = memory_gb_str
 
+    # Check if this is a GGUF model based on configuration or model path
+    is_gguf = config.enable_gguf
+
+    # Also check if the model path contains GGUF indicators
+    if not is_gguf and config.model_name_or_path:
+        model_path_lower = config.model_name_or_path.lower()
+        if 'gguf' in model_path_lower or '.gguf' in model_path_lower:
+            logger.info(f"Detected GGUF model from path: {config.model_name_or_path}")
+            is_gguf = True
+            config.enable_gguf = True
+
     # Load the model based on configuration
-    if config.enable_gguf:
+    if is_gguf:
         return load_gguf_model(config)
     else:
         return load_hf_model(config)
@@ -199,19 +210,27 @@ def load_hf_model(config: ServerConfig) -> Tuple[Any, Any, Dict[str, Any]]:
 
                 # Use bfloat16 for TPU
                 load_params["torch_dtype"] = torch.bfloat16
+                logger.info("Using bfloat16 precision for TPU model loading")
 
                 # Load the model
+                logger.info("Starting model loading on TPU...")
                 model = AutoModelForCausalLM.from_pretrained(**load_params)
 
                 # Move the model to TPU device
+                logger.info("Moving model to TPU device...")
                 model = model.to(device)
                 logger.info("Model successfully loaded and moved to TPU device")
+
+                # Verify the model is on the TPU device
+                model_device = next(model.parameters()).device
+                logger.info(f"Model is on device: {model_device}")
             except Exception as e:
                 logger.error(f"Error loading model on TPU: {e}")
                 logger.warning("Falling back to standard loading method")
                 model = AutoModelForCausalLM.from_pretrained(**load_params)
         else:
             # Standard loading for other devices
+            logger.info(f"Loading model on device: {config.device}")
             model = AutoModelForCausalLM.from_pretrained(**load_params)
 
         # Check if the model has a chat template
@@ -267,12 +286,27 @@ def load_gguf_model(config: ServerConfig) -> Tuple[Any, Any, Dict[str, Any]]:
         # Determine the GGUF path
         gguf_path = config.gguf_path
 
-        # Download GGUF if needed
-        if config.download_gguf:
-            gguf_path = download_gguf(config.model_name_or_path, config.gguf_filename)
+        # If we have a filename but no path, try to download the model
+        if config.gguf_filename and not gguf_path:
+            logger.info(f"Auto-downloading GGUF model {config.gguf_filename} from {config.model_name_or_path}")
+            try:
+                gguf_path = download_gguf(config.model_name_or_path, config.gguf_filename)
+            except Exception as e:
+                logger.error(f"Error auto-downloading GGUF model: {e}")
+                # Try using from_pretrained directly later
+        # Otherwise, if download is explicitly requested
+        elif config.download_gguf:
+            logger.info(f"Downloading GGUF model {config.gguf_filename} from {config.model_name_or_path}")
+            try:
+                gguf_path = download_gguf(config.model_name_or_path, config.gguf_filename)
+            except Exception as e:
+                logger.error(f"Error downloading GGUF model: {e}")
+                # Try using from_pretrained directly later
 
-        if not gguf_path or not os.path.exists(gguf_path):
-            raise ValueError(f"GGUF file not found: {gguf_path}")
+        # Only check for local path if we're not going to use from_pretrained
+        if not hasattr(Llama, 'from_pretrained') or not callable(getattr(Llama, 'from_pretrained', None)):
+            if not gguf_path or not os.path.exists(gguf_path):
+                raise ValueError(f"GGUF file not found: {gguf_path}. Please provide a valid --gguf-path or use a newer version of llama-cpp-python with from_pretrained support.")
 
         logger.info(f"Loading GGUF model from {gguf_path}")
 
@@ -280,22 +314,22 @@ def load_gguf_model(config: ServerConfig) -> Tuple[Any, Any, Dict[str, Any]]:
         chat_format = config.chat_format
 
         # If not specified, try to determine from the model name
-        if not chat_format:
-            model_base_name = config.model_name_or_path.split('/')[-1].lower()
+        # if not chat_format:
+        #     model_base_name = config.model_name_or_path.split('/')[-1].lower()
 
-            # Try to determine the chat format based on the model name
-            if 'llama' in model_base_name:
-                chat_format = 'llama-2'
-            elif 'mistral' in model_base_name:
-                chat_format = 'mistral'
-            elif 'gemma' in model_base_name:
-                chat_format = 'gemma'
-            elif 'phi' in model_base_name:
-                chat_format = 'phi'
-            elif 'helpingai' in model_base_name:
-                chat_format = 'chatml'  # Use chatml format for HelpingAI models
+        #     # Try to determine the chat format based on the model name
+        #     if 'llama' in model_base_name:
+        #         chat_format = 'llama-2'
+        #     elif 'mistral' in model_base_name:
+        #         chat_format = 'mistral'
+        #     elif 'gemma' in model_base_name:
+        #         chat_format = 'gemma'
+        #     elif 'phi' in model_base_name:
+        #         chat_format = 'phi'
+        #     elif 'helpingai' in model_base_name:
+        #         chat_format = 'chatml'  # Use chatml format for HelpingAI models
 
-        logger.info(f"Using chat format: {chat_format or 'None (auto-detect)'}")
+        # logger.info(f"Using chat format: {chat_format or 'None (auto-detect)'}")
 
         # Try to use the from_pretrained method if available (newer versions of llama-cpp-python)
         try:
@@ -304,6 +338,7 @@ def load_gguf_model(config: ServerConfig) -> Tuple[Any, Any, Dict[str, Any]]:
 
                 # If we're using a local path, use the regular constructor
                 if gguf_path and os.path.exists(gguf_path):
+                    logger.info(f"Loading GGUF model from local path: {gguf_path}")
                     if chat_format:
                         model = Llama(
                             model_path=gguf_path,
@@ -321,6 +356,7 @@ def load_gguf_model(config: ServerConfig) -> Tuple[Any, Any, Dict[str, Any]]:
                         )
                 else:
                     # Use from_pretrained to download and load the model
+                    logger.info(f"Using from_pretrained to download and load model: {config.model_name_or_path}, filename: {config.gguf_filename}")
                     model = Llama.from_pretrained(
                         repo_id=config.model_name_or_path,
                         filename=config.gguf_filename,
@@ -423,27 +459,36 @@ def download_gguf(model_name: str, filename: Optional[str] = None) -> str:
         if not filename:
             from huggingface_hub import list_repo_files
 
-            files = list_repo_files(model_name)
-            gguf_files = [f for f in files if f.endswith('.gguf')]
+            try:
+                files = list_repo_files(model_name)
+                gguf_files = [f for f in files if f.endswith('.gguf')]
 
-            if not gguf_files:
-                raise ValueError(f"No GGUF files found in {model_name}")
+                if not gguf_files:
+                    raise ValueError(f"No GGUF files found in {model_name}")
 
-            # Use the first GGUF file found
-            filename = gguf_files[0]
-            logger.info(f"Found GGUF file: {filename}")
+                # Use the first GGUF file found
+                filename = gguf_files[0]
+                logger.info(f"Found GGUF file: {filename}")
+            except Exception as e:
+                logger.error(f"Error listing repository files: {e}")
+                raise ValueError(f"Could not find GGUF files in {model_name}: {e}")
 
         # Download the GGUF file
-        gguf_path = hf_hub_download(
-            repo_id=model_name,
-            filename=filename,
-            cache_dir=cache_dir,
-            resume_download=True,
-            force_download=False
-        )
+        try:
+            logger.info(f"Downloading GGUF file: {filename} from {model_name}")
+            gguf_path = hf_hub_download(
+                repo_id=model_name,
+                filename=filename,
+                cache_dir=cache_dir,
+                resume_download=True,
+                force_download=False
+            )
 
-        logger.info(f"Downloaded GGUF model to {gguf_path}")
-        return gguf_path
+            logger.info(f"Downloaded GGUF model to {gguf_path}")
+            return gguf_path
+        except Exception as e:
+            logger.error(f"Error downloading GGUF file {filename} from {model_name}: {e}")
+            raise ValueError(f"Failed to download GGUF file {filename} from {model_name}: {e}")
 
     except Exception as e:
         logger.error(f"Error downloading GGUF model: {e}")

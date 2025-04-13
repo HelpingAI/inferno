@@ -159,11 +159,11 @@ class ServerConfig:
         load_4bit = quantization.get("4bit", False)
 
         # Extract GGUF configuration
-        gguf = model_config.get("gguf", {})
-        enable_gguf = gguf.get("enabled", False)
-        gguf_path = gguf.get("path")
-        download_gguf = gguf.get("download", False)
-        gguf_filename = gguf.get("filename")
+        gguf = config_dict.get("gguf", {})
+        enable_gguf = gguf.get("enable_gguf", False)
+        gguf_path = gguf.get("gguf_path")
+        download_gguf = gguf.get("download_gguf", False)
+        gguf_filename = gguf.get("gguf_filename")
         num_gpu_layers = gguf.get("num_gpu_layers", -1)
         context_size = gguf.get("context_size", 4096)
         chat_format = gguf.get("chat_format")

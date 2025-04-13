@@ -31,22 +31,30 @@ class InfernoLogger:
             log_file: Optional file path to write logs to
         """
         self.logger = logging.getLogger(name)
-        self.set_level(level)
 
-        # Create formatter
-        formatter = logging.Formatter(DEFAULT_LOG_FORMAT)
+        # Check if this logger already has handlers to avoid duplicate logging
+        if not self.logger.handlers:
+            self.set_level(level)
 
-        # Create console handler
-        console_handler = logging.StreamHandler(sys.stdout)
-        console_handler.setFormatter(formatter)
-        self.logger.addHandler(console_handler)
+            # Create formatter
+            formatter = logging.Formatter(DEFAULT_LOG_FORMAT)
 
-        # Create file handler if log_file is provided
-        if log_file:
-            os.makedirs(os.path.dirname(log_file), exist_ok=True)
-            file_handler = logging.FileHandler(log_file)
-            file_handler.setFormatter(formatter)
-            self.logger.addHandler(file_handler)
+            # Create console handler
+            console_handler = logging.StreamHandler(sys.stdout)
+            console_handler.setFormatter(formatter)
+            self.logger.addHandler(console_handler)
+
+            # Create file handler if log_file is provided
+            if log_file:
+                log_dir = os.path.dirname(log_file)
+                if log_dir:  # Only create directory if there's a path component
+                    os.makedirs(log_dir, exist_ok=True)
+                file_handler = logging.FileHandler(log_file)
+                file_handler.setFormatter(formatter)
+                self.logger.addHandler(file_handler)
+        else:
+            # If handlers exist, just update the level
+            self.set_level(level)
 
     def set_level(self, level: str):
         """Set the log level."""

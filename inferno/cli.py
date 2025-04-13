@@ -667,8 +667,85 @@ def info(model_path):
 @option("--num-gpu-layers", help="Number of GPU layers for GGUF models", type=int, default=-1)
 @option("--context-size", help="Context size for GGUF models (in tokens)", type=int, default=4096)
 @option("--chat-format", help="Chat format for GGUF models (llama-2, mistral, gemma, phi, chatml)")
-def server(**kwargs):
-    """Start the Inferno server"""
+def run_server_daemon(kwargs):
+    """Run the server as a daemon process"""
+    import sys
+    import os
+    import atexit
+    import time
+    import signal
+    import tempfile
+    from pathlib import Path
+
+    # Get daemon log file path
+    daemon_log = kwargs.get('daemon_log', 'inferno_daemon.log')
+    pid_file = kwargs.get('pid_file')
+
+    # If no pid_file is specified, create one in the temp directory
+    if not pid_file:
+        pid_dir = tempfile.gettempdir()
+        pid_file = os.path.join(pid_dir, 'inferno_daemon.pid')
+
+    # Create daemon process
+    try:
+        # First fork
+        pid = os.fork()
+        if pid > 0:
+            # Exit first parent
+            sys.exit(0)
+    except OSError as e:
+        print(f"Fork #1 failed: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    # Decouple from parent environment
+    os.chdir('/')
+    os.setsid()
+    os.umask(0)
+
+    # Second fork
+    try:
+        pid = os.fork()
+        if pid > 0:
+            # Print the PID and exit from second parent
+            print(f"Daemon started with PID {pid}. Logs will be written to {daemon_log}")
+            sys.exit(0)
+    except OSError as e:
+        print(f"Fork #2 failed: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    # Redirect standard file descriptors
+    sys.stdout.flush()
+    sys.stderr.flush()
+
+    # Open log file
+    log_file = open(daemon_log, 'a+')
+    os.dup2(log_file.fileno(), sys.stdout.fileno())
+    os.dup2(log_file.fileno(), sys.stderr.fileno())
+
+    # Write PID file
+    with open(pid_file, 'w') as f:
+        f.write(str(os.getpid()))
+
+    # Register function to clean up PID file on exit
+    def cleanup():
+        os.remove(pid_file)
+
+    atexit.register(cleanup)
+
+    # Set up signal handlers
+    def handle_signal(signum, frame):
+        cleanup()
+        sys.exit(0)
+
+    signal.signal(signal.SIGTERM, handle_signal)
+    signal.signal(signal.SIGINT, handle_signal)
+
+    # Now run the actual server
+    _run_server(kwargs)
+
+
+def _run_server(kwargs):
+    """Internal function to run the server with the given configuration"""
     # Set up logging
     log_level = kwargs.get('log_level', 'info')
     log_file = kwargs.get('log_file')
@@ -677,11 +754,77 @@ def server(**kwargs):
     global logger
     logger = InfernoLogger("inferno", level=log_level, log_file=log_file)
 
+    # Import here to avoid circular imports
+    from inferno.utils.device import XLA_AVAILABLE, XLA
+
+    # Auto-enable TPU if available and not explicitly disabled
+    if XLA_AVAILABLE and not kwargs.get('use_tpu', False) and not kwargs.get('device', 'auto').lower() == 'cpu':
+        logger.info("TPU detected and available. Automatically enabling TPU support.")
+        kwargs['use_tpu'] = True
+        # Set device to XLA if it's set to auto
+        if kwargs.get('device', 'auto').lower() == 'auto':
+            logger.info("Setting device to 'xla' for TPU support")
+            kwargs['device'] = XLA
+
     # Log the configuration
     logger.info("Starting Inferno server with the following configuration:")
     for key, value in kwargs.items():
         logger.info(f"  {key}: {value}")
 
+
+@app.command()
+@option("--model", "-m", help="Path to HuggingFace model or local model directory", default="HelpingAI/HelpingAI-15B")
+@option("--model-revision", help="Specific model revision to load")
+@option("--tokenizer", help="Path to tokenizer (defaults to model path)")
+@option("--tokenizer-revision", help="Specific tokenizer revision to load")
+@option("--device", "-d", help="Device to load the model on", default="auto")
+@option("--device-map", help="Device map for model distribution", default="auto")
+@option("--cuda-device-idx", help="CUDA device index to use", type=int, default=0)
+@option("--dtype", help="Data type for model weights", default="float16")
+@option("--load-8bit", help="Load model in 8-bit precision", is_flag=True)
+@option("--load-4bit", help="Load model in 4-bit precision", is_flag=True)
+@option("--host", help="Host to bind the server to", default="0.0.0.0")
+@option("--port", "-p", help="Port to bind the server to", type=int, default=8000)
+@option("--api-keys", help="Comma-separated list of valid API keys")
+@option("--max-concurrent", help="Maximum number of concurrent requests", type=int, default=10)
+@option("--max-queue", help="Maximum queue size for pending requests", type=int, default=100)
+@option("--timeout", help="Timeout for requests in seconds", type=int, default=60)
+@option("--log-level", help="Log level", default="info")
+@option("--log-file", help="Log file path (logs to console if not specified)")
+@option("--additional-models", help="Additional models to load (comma-separated list)")
+@option("--use-tpu", help="Enable TPU support (requires torch_xla)", is_flag=True)
+@option("--force-tpu", help="Force TPU usage even if not detected automatically", is_flag=True)
+@option("--tpu-cores", help="Number of TPU cores to use", type=int, default=8)
+@option("--tpu-memory-limit", help="Memory limit for TPU", default="90GB")
+@option("--enable-gguf", help="Enable GGUF model support", is_flag=True)
+@option("--gguf-path", help="Path to GGUF model file")
+@option("--download-gguf", help="Download GGUF model from Hugging Face (auto-enabled when --gguf-filename is provided)", is_flag=True)
+@option("--gguf-filename", help="Specific GGUF filename to download (auto-enables downloading)")
+@option("--num-gpu-layers", help="Number of GPU layers for GGUF models", type=int, default=-1)
+@option("--context-size", help="Context size for GGUF models (in tokens)", type=int, default=4096)
+@option("--chat-format", help="Chat format for GGUF models (llama-2, mistral, gemma, phi, chatml)")
+@option("--daemon", help="Run server as a background daemon process", is_flag=True)
+@option("--pid-file", help="Path to write the daemon process ID")
+@option("--daemon-log", help="Path to write daemon logs (defaults to inferno_daemon.log)")
+def server(**kwargs):
+    """Start the Inferno server"""
+    # Check if daemon mode is requested
+    if kwargs.get('daemon', False):
+        # Check if we're on Windows
+        import platform
+        if platform.system() == 'Windows':
+            print("Daemon mode is not supported on Windows. Running in foreground instead.")
+            _run_server(kwargs)
+        else:
+            # Run as daemon
+            run_server_daemon(kwargs)
+    else:
+        # Run normally
+        _run_server(kwargs)
+
+
+def _run_server_impl(kwargs):
+    """Implementation of the server startup logic"""
     # Process additional models
     additional_models = []
     if kwargs.get('additional_models'):
@@ -693,6 +836,20 @@ def server(**kwargs):
     if kwargs.get('api_keys'):
         api_keys = [k.strip() for k in kwargs['api_keys'].split(',')]
         kwargs['api_keys'] = api_keys
+
+    # Auto-enable GGUF download when a filename is provided
+    if kwargs.get('gguf_filename') and not kwargs.get('download_gguf'):
+        logger.info(f"Auto-enabling GGUF download for filename: {kwargs.get('gguf_filename')}")
+        kwargs['download_gguf'] = True
+
+    # Auto-enable GGUF when a GGUF filename or path is provided
+    if (kwargs.get('gguf_filename') or kwargs.get('gguf_path')) and not kwargs.get('enable_gguf'):
+        logger.info("Auto-enabling GGUF support based on provided GGUF filename or path")
+        kwargs['enable_gguf'] = True
+
+    # Get log settings from kwargs
+    log_level = kwargs.get('log_level', 'info')
+    log_file = kwargs.get('log_file')
 
     # Create server configuration
     config = ServerConfig.from_dict({
@@ -711,7 +868,8 @@ def server(**kwargs):
             "load_4bit": kwargs.get('load_4bit', False)
         },
         "tpu": {
-            "use_tpu": kwargs.get('use_tpu', False) or kwargs.get('force_tpu', False),
+            "use_tpu": kwargs.get('use_tpu', False),
+            "force_tpu": kwargs.get('force_tpu', False),
             "tpu_cores": kwargs.get('tpu_cores', 8),
             "tpu_memory_limit": kwargs.get('tpu_memory_limit', "90GB")
         },
@@ -742,6 +900,38 @@ def server(**kwargs):
 
     # Run the server
     run_server(config)
+
+
+def _run_server(kwargs):
+    """Internal function to run the server with the given configuration"""
+    # Set up logging
+    log_level = kwargs.get('log_level', 'info')
+    log_file = kwargs.get('log_file')
+
+    # Configure the logger - use get_logger to avoid duplicate handlers
+    from inferno.utils.logger import get_logger
+    global logger
+    logger = get_logger("inferno", level=log_level, log_file=log_file)
+
+    # Import here to avoid circular imports
+    from inferno.utils.device import XLA_AVAILABLE, XLA
+
+    # Auto-enable TPU if available and not explicitly disabled
+    if XLA_AVAILABLE and not kwargs.get('use_tpu', False) and not kwargs.get('device', 'auto').lower() == 'cpu':
+        logger.info("TPU detected and available. Automatically enabling TPU support.")
+        kwargs['use_tpu'] = True
+        # Set device to XLA if it's set to auto
+        if kwargs.get('device', 'auto').lower() == 'auto':
+            logger.info("Setting device to 'xla' for TPU support")
+            kwargs['device'] = XLA
+
+    # Log the configuration once
+    logger.info("Starting Inferno server with the following configuration:")
+    for key, value in kwargs.items():
+        logger.info(f"  {key}: {value}")
+
+    # Run the actual server implementation
+    _run_server_impl(kwargs)
 
 
 # Define version command
@@ -844,6 +1034,179 @@ def util():
 
 
 @util.command()
+@option("--pid-file", help="Path to the daemon PID file (default: system temp directory)")
+def daemon_status(pid_file=None):
+    """Check the status of the Inferno daemon"""
+    import os
+    import tempfile
+    import psutil
+
+    # If no pid_file is specified, use the default location
+    if not pid_file:
+        pid_dir = tempfile.gettempdir()
+        pid_file = os.path.join(pid_dir, 'inferno_daemon.pid')
+
+    if not os.path.exists(pid_file):
+        console.print("[yellow]No Inferno daemon is running (PID file not found)[/yellow]")
+        return
+
+    try:
+        with open(pid_file, 'r') as f:
+            pid = int(f.read().strip())
+
+        # Check if the process is running
+        if psutil.pid_exists(pid):
+            process = psutil.Process(pid)
+            # Check if it's an Inferno process
+            if "inferno" in process.name().lower() or "python" in process.name().lower():
+                console.print(f"[green]Inferno daemon is running with PID {pid}[/green]")
+
+                # Get more details about the process
+                if RICH_AVAILABLE:
+                    table = Table(title="Daemon Process Information")
+                    table.add_column("Property", style="cyan")
+                    table.add_column("Value", style="green")
+
+                    table.add_row("PID", str(pid))
+                    table.add_row("Status", process.status())
+                    table.add_row("CPU Usage", f"{process.cpu_percent()}%")
+                    table.add_row("Memory Usage", f"{process.memory_info().rss / (1024 * 1024):.2f} MB")
+                    table.add_row("Running Time", str(psutil.datetime.datetime.now() -
+                                              psutil.datetime.datetime.fromtimestamp(process.create_time())))
+
+                    console.print(table)
+                else:
+                    print(f"PID: {pid}")
+                    print(f"Status: {process.status()}")
+                    print(f"CPU Usage: {process.cpu_percent()}%")
+                    print(f"Memory Usage: {process.memory_info().rss / (1024 * 1024):.2f} MB")
+                    running_time = psutil.datetime.datetime.now() - psutil.datetime.datetime.fromtimestamp(process.create_time())
+                    print(f"Running Time: {running_time}")
+            else:
+                console.print(f"[yellow]Process with PID {pid} exists but doesn't appear to be an Inferno daemon[/yellow]")
+        else:
+            console.print(f"[red]No process with PID {pid} is running (stale PID file)[/red]")
+            # Clean up the stale PID file
+            os.remove(pid_file)
+    except Exception as e:
+        console.print(f"[red]Error checking daemon status: {str(e)}[/red]")
+
+
+@util.command()
+@option("--pid-file", help="Path to the daemon PID file (default: system temp directory)")
+@option("--force", "-f", help="Force kill the process if graceful shutdown fails", is_flag=True)
+def daemon_stop(pid_file=None, force=False):
+    """Stop the Inferno daemon"""
+    import os
+    import tempfile
+    import psutil
+    import time
+
+    # If no pid_file is specified, use the default location
+    if not pid_file:
+        pid_dir = tempfile.gettempdir()
+        pid_file = os.path.join(pid_dir, 'inferno_daemon.pid')
+
+    if not os.path.exists(pid_file):
+        console.print("[yellow]No Inferno daemon is running (PID file not found)[/yellow]")
+        return
+
+    try:
+        with open(pid_file, 'r') as f:
+            pid = int(f.read().strip())
+
+        # Check if the process is running
+        if psutil.pid_exists(pid):
+            process = psutil.Process(pid)
+
+            # Try to terminate gracefully first
+            console.print(f"Stopping Inferno daemon with PID {pid}...")
+            process.terminate()
+
+            # Wait for the process to terminate
+            _, alive = psutil.wait_procs([process], timeout=10)
+
+            if process in alive:
+                if force:
+                    console.print("[yellow]Graceful termination failed. Force killing the process...[/yellow]")
+                    process.kill()
+                    time.sleep(1)
+                    if psutil.pid_exists(pid):
+                        console.print(f"[red]Failed to kill process with PID {pid}[/red]")
+                    else:
+                        console.print("[green]Process forcefully terminated[/green]")
+                else:
+                    console.print("[red]Failed to terminate the process. Try with --force option.[/red]")
+            else:
+                console.print("[green]Inferno daemon stopped successfully[/green]")
+
+            # Clean up the PID file if it still exists
+            if os.path.exists(pid_file):
+                os.remove(pid_file)
+        else:
+            console.print(f"[yellow]No process with PID {pid} is running (stale PID file)[/yellow]")
+            # Clean up the stale PID file
+            os.remove(pid_file)
+            console.print("[green]Removed stale PID file[/green]")
+    except Exception as e:
+        console.print(f"[red]Error stopping daemon: {str(e)}[/red]")
+
+
+@util.command()
+def daemon_list():
+    """List all running Inferno daemon processes"""
+    import psutil
+
+    inferno_processes = []
+
+    # Find all Python processes that might be Inferno daemons
+    for proc in psutil.process_iter(['pid', 'name', 'cmdline', 'create_time']):
+        try:
+            # Check if it's a Python process
+            if proc.info['name'] and ('python' in proc.info['name'].lower() or 'inferno' in proc.info['name'].lower()):
+                # Check if the command line contains 'inferno'
+                cmdline = proc.info['cmdline']
+                if cmdline and any('inferno' in cmd.lower() for cmd in cmdline):
+                    # This is likely an Inferno process
+                    inferno_processes.append({
+                        'pid': proc.info['pid'],
+                        'cmdline': ' '.join(cmdline) if cmdline else 'Unknown',
+                        'create_time': proc.info['create_time']
+                    })
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            pass
+
+    if not inferno_processes:
+        console.print("[yellow]No Inferno daemon processes found[/yellow]")
+        return
+
+    # Display the processes
+    if RICH_AVAILABLE:
+        table = Table(title="Running Inferno Daemon Processes")
+        table.add_column("PID", style="cyan")
+        table.add_column("Command", style="green")
+        table.add_column("Running Time", style="yellow")
+
+        for proc in inferno_processes:
+            running_time = psutil.datetime.datetime.now() - psutil.datetime.datetime.fromtimestamp(proc['create_time'])
+            table.add_row(
+                str(proc['pid']),
+                proc['cmdline'],
+                str(running_time)
+            )
+
+        console.print(table)
+    else:
+        print("Running Inferno Daemon Processes:")
+        for proc in inferno_processes:
+            running_time = psutil.datetime.datetime.now() - psutil.datetime.datetime.fromtimestamp(proc['create_time'])
+            print(f"PID: {proc['pid']}")
+            print(f"Command: {proc['cmdline']}")
+            print(f"Running Time: {running_time}")
+            print("---")
+
+
+@util.command()
 def check_dependencies():
     """Check if all dependencies are installed"""
     import importlib.util
@@ -909,7 +1272,6 @@ def benchmark(host, port, model, num_requests, concurrent, prompt, max_tokens):
     """Benchmark the Inferno server"""
     import time
     import requests
-    import json
     import statistics
     from concurrent.futures import ThreadPoolExecutor
 

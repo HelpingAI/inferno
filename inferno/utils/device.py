@@ -238,24 +238,34 @@ def setup_device(device_type: str = AUTO,
 
     elif (device_type == XLA or use_tpu) and XLA_AVAILABLE:
         logger.info(f"Using TPU with {tpu_cores} cores")
+        logger.info("TPU is available and will be used for model inference")
 
         # Set TPU-specific environment variables if not already set
         if "PJRT_DEVICE" not in os.environ:
             os.environ["PJRT_DEVICE"] = "TPU"
+            logger.info("Set PJRT_DEVICE=TPU environment variable")
         if "XLA_PYTHON_CLIENT_PREALLOCATE" not in os.environ:
             os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+            logger.info("Set XLA_PYTHON_CLIENT_PREALLOCATE=false environment variable")
 
         # Enable bfloat16 for better performance
         os.environ['XLA_USE_BF16'] = '1'
+        logger.info("Enabled bfloat16 precision for TPU (XLA_USE_BF16=1)")
 
         # Set TPU memory allocation strategy
         os.environ['XLA_TENSOR_ALLOCATOR_MAXSIZE'] = '100000000000'  # ~100GB
+        logger.info("Set TPU memory allocation strategy (XLA_TENSOR_ALLOCATOR_MAXSIZE=100GB)")
 
         # Try to initialize the TPU device to ensure it's working
         try:
             import torch_xla.core.xla_model as xm # type: ignore[import]
-            _ = xm.xla_device()
-            logger.info("TPU device successfully initialized")
+            device = xm.xla_device()
+            logger.info(f"TPU device successfully initialized: {device}")
+
+            # Get TPU device count for additional verification
+            devices = xm.get_xla_supported_devices()
+            logger.info(f"Found {len(devices)} TPU devices: {devices}")
+
             device_type = XLA
         except Exception as e:
             logger.error(f"Failed to initialize TPU device: {e}")
