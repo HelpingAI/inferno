@@ -758,6 +758,7 @@ def info():
     import platform
     import torch
     import psutil
+    from inferno.utils.device import XLA_AVAILABLE, get_device_info, XLA
 
     # Create a table for system info
     if RICH_AVAILABLE:
@@ -787,6 +788,18 @@ def info():
             for i in range(torch.cuda.device_count()):
                 table.add_row(f"GPU {i}", torch.cuda.get_device_name(i))
 
+        # Add TPU information if available
+        if XLA_AVAILABLE:
+            table.add_row("TPU Available", "True")
+            # Get detailed TPU information
+            tpu_info = get_device_info(XLA)
+            if "count" in tpu_info:
+                table.add_row("TPU Device Count", str(tpu_info["count"]))
+            if "version" in tpu_info:
+                table.add_row("TPU Version", tpu_info["version"])
+            if "topology" in tpu_info:
+                table.add_row("TPU Topology", tpu_info["topology"])
+
         console.print(table)
     else:
         # Fallback for when rich is not available
@@ -809,6 +822,18 @@ def info():
             print(f"GPU Count: {torch.cuda.device_count()}")
             for i in range(torch.cuda.device_count()):
                 print(f"GPU {i}: {torch.cuda.get_device_name(i)}")
+
+        # Add TPU information if available
+        if XLA_AVAILABLE:
+            print("TPU Available: True")
+            # Get detailed TPU information
+            tpu_info = get_device_info(XLA)
+            if "count" in tpu_info:
+                print(f"TPU Device Count: {tpu_info['count']}")
+            if "version" in tpu_info:
+                print(f"TPU Version: {tpu_info['version']}")
+            if "topology" in tpu_info:
+                print(f"TPU Topology: {tpu_info['topology']}")
 
 
 # Define a utility group
