@@ -5,9 +5,11 @@ This module provides functions for generating text from models.
 """
 
 import torch
-from typing import Dict, List, Optional, Any, Union, Tuple
+from typing import Dict, List, Optional, Any, Union, Tuple, Iterator
 import time
+import threading
 
+from transformers import TextIteratorStreamer
 from inferno.utils.logger import get_logger
 from inferno.models.registry import ModelInfo
 
@@ -36,6 +38,11 @@ def format_chat_messages(messages: List[Dict[str, str]], tokenizer) -> str:
                 add_generation_prompt=True
             )
             logger.info(f"Using native chat template for model")
+
+            # Check if the prompt is empty or None
+            if not prompt:
+                raise ValueError("Chat template returned empty prompt")
+
             return prompt
         except Exception as e:
             logger.warning(f"Error applying chat template: {e}")
@@ -44,8 +51,12 @@ def format_chat_messages(messages: List[Dict[str, str]], tokenizer) -> str:
     logger.warning("No chat template available, using fallback format")
     prompt = ""
     for message in messages:
-        role = message["role"]
-        content = message["content"]
+        role = message.get("role", "")
+        content = message.get("content", "")
+
+        # Skip empty messages
+        if not content:
+            continue
 
         if role == "system":
             prompt += f"System: {content}\n\n"
@@ -63,7 +74,8 @@ def format_chat_messages(messages: List[Dict[str, str]], tokenizer) -> str:
 def generate_completion(model_info: ModelInfo, prompt: str, max_tokens: int = 100,
                        temperature: float = 0.7, top_p: float = 1.0,
                        frequency_penalty: float = 0.0, presence_penalty: float = 0.0,
-                       stop: Optional[Union[str, List[str]]] = None) -> Tuple[str, str]:
+                       stop: Optional[Union[str, List[str]]] = None,
+                       stream: bool = False) -> Union[Tuple[str, str], TextIteratorStreamer]:
     """
     Generate a completion from a model.
 
@@ -76,9 +88,11 @@ def generate_completion(model_info: ModelInfo, prompt: str, max_tokens: int = 10
         frequency_penalty: Frequency penalty
         presence_penalty: Presence penalty
         stop: Stop sequences
+        stream: Whether to stream the output
 
     Returns:
-        Tuple of (generated_text, finish_reason)
+        If stream=False: Tuple of (generated_text, finish_reason)
+        If stream=True: TextIteratorStreamer that yields chunks of generated text
     """
     model = model_info.model
     tokenizer = model_info.tokenizer
@@ -132,9 +146,23 @@ def generate_completion(model_info: ModelInfo, prompt: str, max_tokens: int = 10
             stop_token_ids = [tokenizer.encode(s, add_special_tokens=False)[-1] for s in stop]
             gen_kwargs["eos_token_id"] = stop_token_ids
 
-        # Generate
-        with torch.no_grad():
-            output = model.generate(input_ids, **gen_kwargs)
+        # Handle streaming
+        if stream:
+            # Create a streamer
+            streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
+            gen_kwargs["streamer"] = streamer
+
+            # Start generation in a separate thread
+            thread = threading.Thread(
+                target=lambda: model.generate(input_ids, **gen_kwargs)
+            )
+            thread.start()
+
+            return streamer
+        else:
+            # Generate
+            with torch.no_grad():
+                output = model.generate(input_ids, **gen_kwargs)
 
         # Decode the output
         generated_text = tokenizer.decode(output[0][len(input_ids[0]):], skip_special_tokens=True)
@@ -149,7 +177,8 @@ def generate_chat_completion(model_info: ModelInfo, messages: List[Dict[str, str
                             max_tokens: int = 100, temperature: float = 0.7,
                             top_p: float = 1.0, frequency_penalty: float = 0.0,
                             presence_penalty: float = 0.0,
-                            stop: Optional[Union[str, List[str]]] = None) -> Tuple[str, str]:
+                            stop: Optional[Union[str, List[str]]] = None,
+                            stream: bool = False) -> Union[Tuple[str, str], TextIteratorStreamer]:
     """
     Generate a chat completion from a model.
 
@@ -162,9 +191,11 @@ def generate_chat_completion(model_info: ModelInfo, messages: List[Dict[str, str
         frequency_penalty: Frequency penalty
         presence_penalty: Presence penalty
         stop: Stop sequences
+        stream: Whether to stream the output
 
     Returns:
-        Tuple of (generated_text, finish_reason)
+        If stream=False: Tuple of (generated_text, finish_reason)
+        If stream=True: TextIteratorStreamer that yields chunks of generated text
     """
     model = model_info.model
     tokenizer = model_info.tokenizer
@@ -192,12 +223,29 @@ def generate_chat_completion(model_info: ModelInfo, messages: List[Dict[str, str
                 )
 
                 # Extract the generated text
+                logger.debug(f"Chat completion response: {completion}")
                 if isinstance(completion, dict) and 'choices' in completion:
-                    text = completion['choices'][0]['message']['content']
-                    finish_reason = completion['choices'][0].get('finish_reason', 'length')
+                    # Handle dictionary response
+                    choice = completion['choices'][0]
+                    if 'message' in choice and choice['message']:
+                        if isinstance(choice['message'], dict) and 'content' in choice['message']:
+                            text = choice['message']['content']
+                        else:
+                            # Try to access as an object
+                            text = getattr(choice['message'], 'content', '')
+                    else:
+                        # Some models might return text directly
+                        text = choice.get('text', '')
+                    finish_reason = choice.get('finish_reason', 'length')
                 else:
-                    text = completion.choices[0].message.content
-                    finish_reason = completion.choices[0].finish_reason or 'length'
+                    # Handle object response
+                    choice = completion.choices[0]
+                    if hasattr(choice, 'message') and choice.message:
+                        text = getattr(choice.message, 'content', '')
+                    else:
+                        # Some models might return text directly
+                        text = getattr(choice, 'text', '')
+                    finish_reason = getattr(choice, 'finish_reason', 'length') or 'length'
 
                 return text, finish_reason
             else:
@@ -208,7 +256,10 @@ def generate_chat_completion(model_info: ModelInfo, messages: List[Dict[str, str
                     top_p, frequency_penalty, presence_penalty, stop
                 )
         except Exception as e:
-            logger.error(f"Error generating chat completion with GGUF model: {e}")
+            logger.error(f"Error generating chat completion with GGUF model: {e}", exc_info=True)
+            # Log more details about the model and messages for debugging
+            logger.debug(f"Model info: {model_info.model_id}")
+            logger.debug(f"Messages: {messages}")
             # Fall back to a simple response
             return f"Error generating chat completion: {str(e)}", "error"
 
@@ -231,21 +282,73 @@ def generate_chat_completion(model_info: ModelInfo, messages: List[Dict[str, str
             # Create a text-generation pipeline with the model
             pipe = pipeline("text-generation", model=model, tokenizer=tokenizer, device=model.device.index if hasattr(model.device, 'index') else -1)
 
-            # Generate the response
-            result = pipe(messages, max_new_tokens=max_tokens, temperature=temperature, top_p=top_p, do_sample=(temperature > 0))
+            # Format the prompt using the chat template
+            formatted_prompt = format_chat_messages(messages, tokenizer)
+            logger.debug(f"Formatted prompt for pipeline: {formatted_prompt}")
+
+            # Check if the formatted prompt is empty or None
+            if not formatted_prompt:
+                logger.warning("Formatted prompt is empty or None, using fallback format")
+                # Use a simple fallback format
+                formatted_prompt = "\n".join([f"{msg['role']}: {msg['content']}" for msg in messages if msg.get('content')]) + "\nassistant: "
+                logger.debug(f"Fallback formatted prompt: {formatted_prompt}")
+
+            # Handle streaming
+            if stream:
+                # Create a streamer
+                streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
+
+                # Start generation in a separate thread
+                # Note: The first argument to the pipeline must be the text input as a positional argument
+                # The rest can be keyword arguments
+                generation_kwargs = {
+                    "max_new_tokens": max_tokens,
+                    "temperature": temperature,
+                    "top_p": top_p,
+                    "do_sample": (temperature > 0),
+                    "streamer": streamer
+                }
+
+                thread = threading.Thread(target=lambda: pipe(formatted_prompt, **generation_kwargs))
+                thread.start()
+
+                return streamer
+            else:
+                # Generate the response using the formatted prompt
+                result = pipe(formatted_prompt, max_new_tokens=max_tokens, temperature=temperature, top_p=top_p, do_sample=(temperature > 0))
 
             # Extract the generated text
             if isinstance(result, list) and len(result) > 0:
                 if isinstance(result[0], dict) and 'generated_text' in result[0]:
-                    return result[0]['generated_text'], "length"
+                    # Get the full generated text
+                    full_text = result[0]['generated_text']
+                    logger.debug(f"Full pipeline generated text: {full_text}")
+
+                    # Extract only the new content (remove the prompt)
+                    if full_text.startswith(formatted_prompt):
+                        generated_text = full_text[len(formatted_prompt):].strip()
+                    else:
+                        # If we can't find the prompt, just return the full text
+                        generated_text = full_text
+
+                    logger.debug(f"Extracted generated text: {generated_text}")
+                    return generated_text, "length"
         except Exception as pipe_error:
-            logger.warning(f"Pipeline approach failed: {pipe_error}. Falling back to standard approach.")
+            logger.error(f"Pipeline approach failed: {pipe_error}", exc_info=True)
+            logger.warning("Falling back to standard approach.")
 
         # Use the apply_chat_template approach
         logger.info("Using apply_chat_template approach")
         try:
             # Apply the chat template to get the formatted input
             inputs = tokenizer.apply_chat_template(messages, return_tensors="pt")
+
+            # Log the tokenized input for debugging
+            logger.debug(f"Tokenized input shape: {inputs.shape}")
+
+            # Decode the input to see what we're actually feeding to the model
+            input_text = tokenizer.decode(inputs[0], skip_special_tokens=False)
+            logger.debug(f"Input text: {input_text}")
 
             # Move to the appropriate device
             input_ids = inputs.to(model.device)
@@ -265,17 +368,45 @@ def generate_chat_completion(model_info: ModelInfo, messages: List[Dict[str, str
                 stop_token_ids = [tokenizer.encode(s, add_special_tokens=False)[-1] for s in stop]
                 gen_kwargs["eos_token_id"] = stop_token_ids
 
-            # Generate
-            with torch.no_grad():
-                outputs = model.generate(input_ids, **gen_kwargs)
+            # Handle streaming
+            if stream:
+                # Create a streamer
+                streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
+                gen_kwargs["streamer"] = streamer
 
-            # Decode the output, skipping the input portion
-            response = outputs[0][len(input_ids[0]):]
-            generated_text = tokenizer.decode(response, skip_special_tokens=True)
+                # Start generation in a separate thread
+                thread = threading.Thread(
+                    target=lambda: model.generate(input_ids, **gen_kwargs)
+                )
+                thread.start()
 
+                return streamer
+            else:
+                # Generate
+                with torch.no_grad():
+                    outputs = model.generate(input_ids, **gen_kwargs)
+
+            # Decode the full output
+            full_output_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
+            logger.debug(f"Full output text: {full_output_text}")
+
+            # Decode the input portion to find where to start the generated text
+            input_text_clean = tokenizer.decode(input_ids[0], skip_special_tokens=True)
+            logger.debug(f"Input text (clean): {input_text_clean}")
+
+            # Extract only the new content
+            if full_output_text.startswith(input_text_clean):
+                generated_text = full_output_text[len(input_text_clean):].strip()
+            else:
+                # Decode the output, skipping the input portion by token count
+                response = outputs[0][len(input_ids[0]):]
+                generated_text = tokenizer.decode(response, skip_special_tokens=True)
+
+            logger.debug(f"Generated text: {generated_text}")
             return generated_text, "length"
         except Exception as template_error:
-            logger.warning(f"apply_chat_template approach failed: {template_error}. Falling back to standard approach.")
+            logger.error(f"apply_chat_template approach failed: {template_error}", exc_info=True)
+            logger.warning("Falling back to standard approach.")
 
         # Otherwise use the standard approach with the formatted prompt
         logger.info("Using standard generation with chat template")
@@ -283,6 +414,10 @@ def generate_chat_completion(model_info: ModelInfo, messages: List[Dict[str, str
         # Tokenize the prompt
         inputs = tokenizer(prompt, return_tensors="pt")
         input_ids = inputs.input_ids.to(model.device)
+
+        # Log the prompt and tokenized input for debugging
+        logger.debug(f"Standard approach prompt: {prompt}")
+        logger.debug(f"Standard approach tokenized input shape: {input_ids.shape}")
 
         # Set up generation parameters
         gen_kwargs = {
@@ -299,14 +434,44 @@ def generate_chat_completion(model_info: ModelInfo, messages: List[Dict[str, str
             stop_token_ids = [tokenizer.encode(s, add_special_tokens=False)[-1] for s in stop]
             gen_kwargs["eos_token_id"] = stop_token_ids
 
-        # Generate
-        with torch.no_grad():
-            output = model.generate(input_ids, **gen_kwargs)
+        # Handle streaming
+        if stream:
+            # Create a streamer
+            streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
+            gen_kwargs["streamer"] = streamer
 
-        # Decode the output
-        generated_text = tokenizer.decode(output[0][len(input_ids[0]):], skip_special_tokens=True)
+            # Start generation in a separate thread
+            thread = threading.Thread(
+                target=lambda: model.generate(input_ids, **gen_kwargs)
+            )
+            thread.start()
 
+            return streamer
+        else:
+            # Generate
+            with torch.no_grad():
+                output = model.generate(input_ids, **gen_kwargs)
+
+        # Decode the full output
+        full_output_text = tokenizer.decode(output[0], skip_special_tokens=True)
+        logger.debug(f"Standard approach full output: {full_output_text}")
+
+        # Decode the input portion to find where to start the generated text
+        input_text = tokenizer.decode(input_ids[0], skip_special_tokens=True)
+        logger.debug(f"Standard approach input text: {input_text}")
+
+        # Extract only the new content
+        if full_output_text.startswith(input_text):
+            generated_text = full_output_text[len(input_text):].strip()
+        else:
+            # Decode the output, skipping the input portion by token count
+            generated_text = tokenizer.decode(output[0][len(input_ids[0]):], skip_special_tokens=True)
+
+        logger.debug(f"Standard approach generated text: {generated_text}")
         return generated_text, "length"
     except Exception as e:
-        logger.error(f"Error generating chat completion with HF model: {e}")
+        logger.error(f"Error generating chat completion with HF model: {e}", exc_info=True)
+        # Log more details about the model and messages for debugging
+        logger.debug(f"Model info: {model_info.model_id}")
+        logger.debug(f"Messages: {messages}")
         return f"Error generating chat completion: {str(e)}", "error"

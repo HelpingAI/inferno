@@ -1,5 +1,7 @@
 from fastapi import APIRouter, FastAPI, HTTPException, Request, BackgroundTasks, Query
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
+import json
+import asyncio
 from pydantic import BaseModel, Field
 from typing import Dict, List, Optional, Any, Union, Literal
 import time
@@ -32,7 +34,7 @@ class ModelsResponse(BaseModel):
 
 class Message(BaseModel):
     role: str
-    content: str
+    content: Optional[str] = ""
 
 
 class CompletionRequest(BaseModel):
@@ -70,6 +72,16 @@ class ChatCompletionChoice(BaseModel):
     index: int
     finish_reason: Optional[str] = None
 
+    class Config:
+        # Allow extra fields to be ignored
+        extra = "ignore"
+
+
+class UsageInfo(BaseModel):
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+
 
 class CompletionResponse(BaseModel):
     id: str
@@ -77,6 +89,7 @@ class CompletionResponse(BaseModel):
     created: int
     model: str
     choices: List[CompletionChoice]
+    usage: Optional[UsageInfo] = None
 
 
 class ChatCompletionResponse(BaseModel):
@@ -85,6 +98,11 @@ class ChatCompletionResponse(BaseModel):
     created: int
     model: str
     choices: List[ChatCompletionChoice]
+    usage: Optional[UsageInfo] = None
+
+    class Config:
+        # Allow extra fields to be ignored
+        extra = "ignore"
 
 
 class ErrorResponse(BaseModel):
@@ -151,30 +169,157 @@ def register_openai_routes(app: FastAPI, config: ServerConfig):
         task_id = f"completion-{int(time.time() * 1000)}"
 
         try:
-            # Call the generation function
-            completion_text, finish_reason = generate_completion(
-                model_info=model_info,
-                prompt=request.prompt,
-                max_tokens=request.max_tokens,
-                temperature=request.temperature,
-                top_p=request.top_p,
-                frequency_penalty=request.frequency_penalty,
-                presence_penalty=request.presence_penalty,
-                stop=request.stop
-            )
+            # Check if streaming is requested
+            if request.stream:
+                # Call the generation function with streaming
+                streamer = generate_completion(
+                    model_info=model_info,
+                    prompt=request.prompt,
+                    max_tokens=request.max_tokens,
+                    temperature=request.temperature,
+                    top_p=request.top_p,
+                    frequency_penalty=request.frequency_penalty,
+                    presence_penalty=request.presence_penalty,
+                    stop=request.stop,
+                    stream=True
+                )
 
-            return {
-                "id": task_id,
-                "created": int(time.time()),
-                "model": model_info.model_id,
-                "choices": [
-                    {
-                        "text": completion_text,
-                        "index": 0,
-                        "finish_reason": finish_reason
+                # Create a streaming response
+                async def stream_response():
+                    # Send the initial response
+                    chunk_id = f"cmpl-{int(time.time() * 1000)}"
+                    created = int(time.time())
+
+                    # Stream the content
+                    for text_chunk in streamer:
+                        if text_chunk:
+                            chunk = {
+                                "id": chunk_id,
+                                "object": "text_completion",
+                                "created": created,
+                                "model": model_info.model_id,
+                                "choices": [
+                                    {
+                                        "text": text_chunk,
+                                        "index": 0,
+                                        "logprobs": None,
+                                        "finish_reason": None
+                                    }
+                                ]
+                            }
+                            yield f"data: {json.dumps(chunk)}\n\n"
+
+                    # Send the final chunk
+                    final_chunk = {
+                        "id": chunk_id,
+                        "object": "text_completion",
+                        "created": created,
+                        "model": model_info.model_id,
+                        "choices": [
+                            {
+                                "text": "",
+                                "index": 0,
+                                "logprobs": None,
+                                "finish_reason": "length"
+                            }
+                        ]
                     }
-                ]
-            }
+                    yield f"data: {json.dumps(final_chunk)}\n\n"
+
+                    # Send the [DONE] message
+                    yield "data: [DONE]\n\n"
+
+                return StreamingResponse(stream_response(), media_type="text/event-stream")
+            else:
+                # Call the generation function without streaming
+                completion_text, finish_reason = generate_completion(
+                    model_info=model_info,
+                    prompt=request.prompt,
+                    max_tokens=request.max_tokens,
+                    temperature=request.temperature,
+                    top_p=request.top_p,
+                    frequency_penalty=request.frequency_penalty,
+                    presence_penalty=request.presence_penalty,
+                    stop=request.stop,
+                    stream=False
+                )
+
+                # Estimate token counts (this is a rough estimate)
+                prompt_tokens = 0
+                completion_tokens = 0
+
+                # If we have a tokenizer, try to get actual token counts
+                if model_info.tokenizer:
+                    try:
+                        # Count prompt tokens
+                        if isinstance(request.prompt, str):
+                            prompt_tokens = len(model_info.tokenizer.encode(request.prompt))
+
+                        # Count completion tokens
+                        if completion_text:
+                            completion_tokens = len(model_info.tokenizer.encode(completion_text))
+                    except Exception as e:
+                        logger.warning(f"Error estimating token counts: {e}")
+                        # Fallback to rough estimates
+                        prompt_tokens = len(request.prompt) // 4 if isinstance(request.prompt, str) else 0
+                        completion_tokens = len(completion_text) // 4
+                else:
+                    # Rough estimate based on characters (assuming ~4 chars per token on average)
+                    prompt_tokens = len(request.prompt) // 4 if isinstance(request.prompt, str) else 0
+                    completion_tokens = len(completion_text) // 4
+
+                total_tokens = prompt_tokens + completion_tokens
+
+                # Create a proper CompletionChoice object
+                choice = CompletionChoice(
+                    text=completion_text if completion_text is not None else "",
+                    index=0,
+                    finish_reason=finish_reason
+                )
+
+                # Create a proper UsageInfo object
+                usage = UsageInfo(
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    total_tokens=total_tokens
+                )
+
+                # Create a proper CompletionResponse object
+                response = CompletionResponse(
+                    id=task_id,
+                    created=int(time.time()),
+                    model=model_info.model_id,
+                    choices=[choice],
+                    usage=usage
+                )
+
+                # Log the response for debugging
+                logger.debug(f"Completion response: {response}")
+
+                # Return the response as a dictionary with explicit serialization
+                response_dict = {
+                    "id": response.id,
+                    "object": response.object,
+                    "created": response.created,
+                    "model": response.model,
+                    "choices": [
+                        {
+                            "text": choice.text,
+                            "index": choice.index,
+                            "finish_reason": choice.finish_reason
+                        } for choice in response.choices
+                    ],
+                    "usage": {
+                        "prompt_tokens": response.usage.prompt_tokens if response.usage else 0,
+                        "completion_tokens": response.usage.completion_tokens if response.usage else 0,
+                        "total_tokens": response.usage.total_tokens if response.usage else 0
+                    }
+                }
+
+                # Log the final response dictionary for debugging
+                logger.debug(f"Final completion response dictionary: {response_dict}")
+
+                return response_dict
         except Exception as e:
             logger.error(f"Error generating completion: {e}")
             raise HTTPException(status_code=500, detail=str(e))
@@ -194,35 +339,198 @@ def register_openai_routes(app: FastAPI, config: ServerConfig):
 
         try:
             # Convert Pydantic models to dictionaries
-            messages = [msg.model_dump() for msg in request.messages]
+            try:
+                # Use model_dump for newer versions of Pydantic
+                messages = [msg.model_dump() for msg in request.messages]
+            except AttributeError:
+                # Fallback to dict for older versions
+                messages = [msg.dict() for msg in request.messages]
 
-            # Call the generation function
-            completion_text, finish_reason = generate_chat_completion(
-                model_info=model_info,
-                messages=messages,
-                max_tokens=request.max_tokens,
-                temperature=request.temperature,
-                top_p=request.top_p,
-                frequency_penalty=request.frequency_penalty,
-                presence_penalty=request.presence_penalty,
-                stop=request.stop
-            )
+            # Log the messages for debugging
+            logger.debug(f"Messages for chat completion: {messages}")
 
-            return {
-                "id": task_id,
-                "created": int(time.time()),
-                "model": model_info.model_id,
-                "choices": [
-                    {
-                        "message": {
-                            "role": "assistant",
-                            "content": completion_text
-                        },
-                        "index": 0,
-                        "finish_reason": finish_reason
+            # Check if streaming is requested
+            if request.stream:
+                # Call the generation function with streaming
+                streamer = generate_chat_completion(
+                    model_info=model_info,
+                    messages=messages,
+                    max_tokens=request.max_tokens,
+                    temperature=request.temperature,
+                    top_p=request.top_p,
+                    frequency_penalty=request.frequency_penalty,
+                    presence_penalty=request.presence_penalty,
+                    stop=request.stop,
+                    stream=True
+                )
+
+                # Create a streaming response
+                async def stream_response():
+                    # Send the initial response
+                    chunk_id = f"chatcmpl-{int(time.time() * 1000)}"
+                    created = int(time.time())
+
+                    # Send the first chunk with role
+                    first_chunk = {
+                        "id": chunk_id,
+                        "object": "chat.completion.chunk",
+                        "created": created,
+                        "model": model_info.model_id,
+                        "choices": [
+                            {
+                                "index": 0,
+                                "delta": {"role": "assistant"},
+                                "finish_reason": None
+                            }
+                        ]
                     }
-                ]
-            }
+                    yield f"data: {json.dumps(first_chunk)}\n\n"
+
+                    # Stream the content
+                    for text_chunk in streamer:
+                        if text_chunk:
+                            chunk = {
+                                "id": chunk_id,
+                                "object": "chat.completion.chunk",
+                                "created": created,
+                                "model": model_info.model_id,
+                                "choices": [
+                                    {
+                                        "index": 0,
+                                        "delta": {"content": text_chunk},
+                                        "finish_reason": None
+                                    }
+                                ]
+                            }
+                            yield f"data: {json.dumps(chunk)}\n\n"
+
+                    # Send the final chunk
+                    final_chunk = {
+                        "id": chunk_id,
+                        "object": "chat.completion.chunk",
+                        "created": created,
+                        "model": model_info.model_id,
+                        "choices": [
+                            {
+                                "index": 0,
+                                "delta": {},
+                                "finish_reason": "length"
+                            }
+                        ]
+                    }
+                    yield f"data: {json.dumps(final_chunk)}\n\n"
+
+                    # Send the [DONE] message
+                    yield "data: [DONE]\n\n"
+
+                return StreamingResponse(stream_response(), media_type="text/event-stream")
+            else:
+                # Call the generation function without streaming
+                completion_text, finish_reason = generate_chat_completion(
+                    model_info=model_info,
+                    messages=messages,
+                    max_tokens=request.max_tokens,
+                    temperature=request.temperature,
+                    top_p=request.top_p,
+                    frequency_penalty=request.frequency_penalty,
+                    presence_penalty=request.presence_penalty,
+                    stop=request.stop,
+                    stream=False
+                )
+
+                # Log the completion text for debugging
+                logger.info(f"Generated completion text: {completion_text}")
+
+                # Ensure we have a valid string for the content
+                if completion_text is None:
+                    completion_text = ""
+                elif not isinstance(completion_text, str):
+                    logger.warning(f"Completion text is not a string: {type(completion_text)}")
+                    completion_text = str(completion_text)
+
+                # Estimate token counts (this is a rough estimate)
+                prompt_tokens = 0
+                completion_tokens = 0
+
+                # If we have a tokenizer, try to get actual token counts
+                if model_info.tokenizer:
+                    try:
+                        # Count prompt tokens
+                        for msg in messages:
+                            if isinstance(msg.get('content', ''), str):
+                                prompt_tokens += len(model_info.tokenizer.encode(msg.get('content', '')))
+
+                        # Count completion tokens
+                        if completion_text:
+                            completion_tokens = len(model_info.tokenizer.encode(completion_text))
+                    except Exception as e:
+                        logger.warning(f"Error estimating token counts: {e}")
+                        # Fallback to rough estimates
+                        prompt_tokens = sum(len(msg.get('content', '')) // 4 for msg in messages if isinstance(msg.get('content', ''), str))
+                        completion_tokens = len(completion_text) // 4
+                else:
+                    # Rough estimate based on characters (assuming ~4 chars per token on average)
+                    prompt_tokens = sum(len(msg.get('content', '')) // 4 for msg in messages if isinstance(msg.get('content', ''), str))
+                    completion_tokens = len(completion_text) // 4
+
+                total_tokens = prompt_tokens + completion_tokens
+
+                # Create a proper Message object
+                message = Message(role="assistant", content=completion_text if completion_text is not None else "")
+
+                # Create a proper ChatCompletionChoice object
+                choice = ChatCompletionChoice(
+                    message=message,
+                    index=0,
+                    finish_reason=finish_reason
+                )
+
+                # Create a proper UsageInfo object
+                usage = UsageInfo(
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    total_tokens=total_tokens
+                )
+
+                # Create a proper ChatCompletionResponse object
+                response = ChatCompletionResponse(
+                    id=task_id,
+                    created=int(time.time()),
+                    model=model_info.model_id,
+                    choices=[choice],
+                    usage=usage
+                )
+
+                # Log the response for debugging
+                logger.debug(f"Chat completion response: {response}")
+
+                # Return the response as a dictionary with explicit serialization
+                response_dict = {
+                    "id": response.id,
+                    "object": response.object,
+                    "created": response.created,
+                    "model": response.model,
+                    "choices": [
+                        {
+                            "message": {
+                                "role": choice.message.role,
+                                "content": choice.message.content
+                            },
+                            "index": choice.index,
+                            "finish_reason": choice.finish_reason
+                        } for choice in response.choices
+                    ],
+                    "usage": {
+                        "prompt_tokens": response.usage.prompt_tokens if response.usage else 0,
+                        "completion_tokens": response.usage.completion_tokens if response.usage else 0,
+                        "total_tokens": response.usage.total_tokens if response.usage else 0
+                    }
+                }
+
+                # Log the final response dictionary for debugging
+                logger.debug(f"Final response dictionary: {response_dict}")
+
+                return response_dict
         except Exception as e:
             logger.error(f"Error generating chat completion: {e}")
             raise HTTPException(status_code=500, detail=str(e))
