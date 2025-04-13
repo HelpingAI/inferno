@@ -31,6 +31,8 @@ setup(
         "psutil>=5.9.0",
         "huggingface_hub>=0.16.0",
         "rich>=10.0.0",
+        "evaluate==0.3.0",
+        "accelerator>=0.20.0",
     ],
     extras_require={
         "tpu": ["torch_xla"],
