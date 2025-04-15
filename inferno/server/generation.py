@@ -97,6 +97,16 @@ def generate_completion(model_info: ModelInfo, prompt: str, max_tokens: int = 10
     model = model_info.model
     tokenizer = model_info.tokenizer
 
+    # Device-aware tensor placement
+    device = getattr(model, 'device', None)
+    if device is None:
+        # Try to infer device from torch/xla
+        try:
+            import torch_xla.core.xla_model as xm # type: ignore[import]
+            device = xm.xla_device()
+        except ImportError:
+            device = torch.device('cpu')
+
     # Check if it's a GGUF model (llama-cpp)
     if 'is_gguf' in model_info.metadata and model_info.metadata['is_gguf']:
         try:
@@ -129,7 +139,7 @@ def generate_completion(model_info: ModelInfo, prompt: str, max_tokens: int = 10
     try:
         # Tokenize the prompt
         inputs = tokenizer(prompt, return_tensors="pt")
-        input_ids = inputs.input_ids.to(model.device)
+        input_ids = inputs.input_ids.to(device)
 
         # Set up generation parameters
         gen_kwargs = {

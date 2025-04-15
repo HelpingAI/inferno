@@ -108,7 +108,7 @@ The server now supports running multiple models simultaneously with intelligent 
 | **Dynamic Loading** | Load multiple models at startup or dynamically at runtime |
 | **Memory Detection** | Automatic detection of available memory on CPU, GPU, TPU, and Apple Silicon |
 | **Memory Allocation** | Dynamic memory allocation that divides available memory equally among models |
-| **Device-specific Buffers** | CPU: 20% buffer (min 4GB), CUDA: 10% buffer (min 2GB), MPS: 15% buffer (min 2GB), TPU: 15% buffer (min 8GB) |
+| **Device-specific Buffers** | (Removed in latest version: now all available memory is divided equally among models) |
 | **Memory Rebalancing** | Memory reallocation when models are added or removed |
 
 </div>
@@ -136,7 +136,7 @@ The server now uses the native role (message) feature of transformers and llama-
 | Run **any language model** from Hugging Face, local files, or custom sources | Run multiple models simultaneously on the same server | Automatic device detection (CPU, GPU, TPU, Apple Silicon) |
 | Support for all major model architectures (LLaMA, Mistral, Qwen, Phi, Gemma, Falcon, etc.) | Dynamic model loading and unloading at runtime without server restart | Run on any available hardware with zero configuration |
 | Automatic model format detection and appropriate loading strategy | Automatic memory detection and allocation across all device types | Graceful fallbacks when requested hardware is unavailable |
-| Seamless handling of different model types and architectures | Device-specific memory management with optimized buffer allocation | Full support for Apple Silicon (M1/M2/M3) via MPS backend |
+| Seamless handling of different model types and architectures | Memory allocation that divides available memory equally among models | Full support for Apple Silicon (M1/M2/M3) via MPS backend |
 | Zero configuration needed for most models - just provide the model path | Memory rebalancing when models are added or removed | Automatic TPU memory detection and optimization |
 
 </div>
@@ -272,19 +272,19 @@ inferno server --model meta-llama/Llama-2-7b-chat-hf --additional-models "mistra
 inferno server --model Qwen/Qwen1.5-7B-Chat --additional-models "google/gemma-7b-it,microsoft/phi-2,mistralai/Mixtral-8x7B-Instruct-v0.1"
 
 # Running multiple models on GPU with automatic memory management
-# Memory is automatically detected and allocated with a 10% buffer (min 2GB)
+# Memory is automatically detected and allocated equally among models
 inferno server --model meta-llama/Llama-2-7b-chat-hf --additional-models "mistralai/Mistral-7B-Instruct-v0.2,google/gemma-7b-it" --device cuda
 
 # Running multiple models on CPU with automatic memory management
-# Memory is automatically detected and allocated with a 20% buffer (min 4GB)
+# Memory is automatically detected and allocated equally among models
 inferno server --model mistralai/Mistral-7B-Instruct-v0.2 --additional-models "microsoft/phi-2,Qwen/Qwen1.5-7B-Chat" --device cpu
 
 # Running multiple models on Apple Silicon with automatic memory management
-# Memory is automatically detected and allocated with a 15% buffer (min 2GB)
+# Memory is automatically detected and allocated equally among models
 inferno server --model google/gemma-7b-it --additional-models "microsoft/phi-2,Qwen/Qwen1.5-7B-Chat" --device mps
 
 # Running multiple models on TPU with automatic memory management
-# Memory is automatically detected and allocated with a 15% buffer (min 8GB)
+# Memory is automatically detected and allocated equally among models
 inferno server --model meta-llama/Llama-2-7b-chat-hf --additional-models "mistralai/Mistral-7B-Instruct-v0.2,google/gemma-7b-it" --use-tpu
 ```
 

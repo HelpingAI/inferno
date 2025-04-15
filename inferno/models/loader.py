@@ -219,6 +219,8 @@ def load_hf_model(config: ServerConfig) -> Tuple[Any, Any, Dict[str, Any]]:
                 # Move the model to TPU device
                 logger.info("Moving model to TPU device...")
                 model = model.to(device)
+                # Attach device info to model for later use
+                model.device = device
                 logger.info("Model successfully loaded and moved to TPU device")
 
                 # Verify the model is on the TPU device
@@ -226,12 +228,20 @@ def load_hf_model(config: ServerConfig) -> Tuple[Any, Any, Dict[str, Any]]:
                 logger.info(f"Model is on device: {model_device}")
             except Exception as e:
                 logger.error(f"Error loading model on TPU: {e}")
-                logger.warning("Falling back to standard loading method")
+                logger.warning("Falling back to standard loading method (CPU/GPU)")
                 model = AutoModelForCausalLM.from_pretrained(**load_params)
+                model.device = torch.device('cpu')
         else:
             # Standard loading for other devices
             logger.info(f"Loading model on device: {config.device}")
             model = AutoModelForCausalLM.from_pretrained(**load_params)
+            # Attach device info to model for later use
+            if config.device == "cuda" and torch.cuda.is_available():
+                model.device = torch.device('cuda')
+            elif config.device == "mps" and hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+                model.device = torch.device('mps')
+            else:
+                model.device = torch.device('cpu')
 
         # Check if the model has a chat template
         has_chat_template = hasattr(tokenizer, 'chat_template') and tokenizer.chat_template is not None
@@ -288,7 +298,6 @@ def load_gguf_model(config: ServerConfig) -> Tuple[Any, Any, Dict[str, Any]]:
 
         # If we have a filename but no path, try to download the model
         if config.gguf_filename and not gguf_path:
-            logger.info(f"Auto-downloading GGUF model {config.gguf_filename} from {config.model_name_or_path}")
             try:
                 gguf_path = download_gguf(config.model_name_or_path, config.gguf_filename)
             except Exception as e:
@@ -296,7 +305,6 @@ def load_gguf_model(config: ServerConfig) -> Tuple[Any, Any, Dict[str, Any]]:
                 # Try using from_pretrained directly later
         # Otherwise, if download is explicitly requested
         elif config.download_gguf:
-            logger.info(f"Downloading GGUF model {config.gguf_filename} from {config.model_name_or_path}")
             try:
                 gguf_path = download_gguf(config.model_name_or_path, config.gguf_filename)
             except Exception as e:
@@ -449,6 +457,9 @@ def download_gguf(model_name: str, filename: Optional[str] = None) -> str:
     try:
         from huggingface_hub import hf_hub_download
         import tempfile
+        import warnings
+        # Suppress FutureWarning for resume_download deprecation
+        warnings.filterwarnings("ignore", category=FutureWarning, module="huggingface_hub.file_download")
 
         logger.info(f"Downloading GGUF model from {model_name}")
 
@@ -475,7 +486,6 @@ def download_gguf(model_name: str, filename: Optional[str] = None) -> str:
 
         # Download the GGUF file
         try:
-            logger.info(f"Downloading GGUF file: {filename} from {model_name}")
             gguf_path = hf_hub_download(
                 repo_id=model_name,
                 filename=filename,

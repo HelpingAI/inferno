@@ -31,6 +31,7 @@ class InfernoLogger:
             log_file: Optional file path to write logs to
         """
         self.logger = logging.getLogger(name)
+        self.logger.propagate = False  # Prevent double logging by disabling propagation
 
         # Check if this logger already has handlers to avoid duplicate logging
         if not self.logger.handlers:

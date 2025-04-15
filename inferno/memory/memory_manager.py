@@ -8,22 +8,6 @@ from inferno.utils.device import CPU, CUDA, MPS, XLA, get_optimal_device
 
 logger = get_logger(__name__)
 
-# Default buffer percentages for different device types
-DEFAULT_BUFFER_PERCENTAGES = {
-    CUDA: 0.10,  # 10% buffer for CUDA
-    CPU: 0.20,   # 20% buffer for CPU
-    MPS: 0.15,   # 15% buffer for MPS (Apple Silicon)
-    XLA: 0.15    # 15% buffer for TPU
-}
-
-# Minimum buffer sizes in GB for different device types
-MIN_BUFFER_GB = {
-    CUDA: 2,     # At least 2GB buffer for CUDA
-    CPU: 4,      # At least 4GB buffer for CPU
-    MPS: 2,      # At least 2GB buffer for MPS
-    XLA: 8       # At least 8GB buffer for TPU
-}
-
 
 class MemoryManager:
     """
@@ -230,18 +214,8 @@ class MemoryManager:
         # Get total available memory
         total_memory = self.detect_available_memory()
 
-        # Get buffer percentage and minimum for this device
-        buffer_percent = DEFAULT_BUFFER_PERCENTAGES.get(self.device, 0.15)  # Default to 15%
-        min_buffer_bytes = MIN_BUFFER_GB.get(self.device, 4) * 1000000000  # Default to 4GB
-
-        # Calculate buffer size (max of percentage or minimum)
-        buffer_memory = max(int(total_memory * buffer_percent), min_buffer_bytes)
-
-        # Calculate available memory after buffer
-        available_memory = total_memory - buffer_memory
-
         # Calculate per-model memory
-        per_model_memory = available_memory // model_count
+        per_model_memory = total_memory // model_count
 
         # Convert to GB string format for display
         per_model_memory_gb = f"{per_model_memory / 1000000000:.2f}GB"
@@ -249,8 +223,6 @@ class MemoryManager:
         # Log memory allocation details
         logger.info(f"Device: {self.device}")
         logger.info(f"Total memory: {total_memory / 1000000000:.2f}GB")
-        logger.info(f"Reserved buffer: {buffer_memory / 1000000000:.2f}GB")
-        logger.info(f"Available memory for models: {available_memory / 1000000000:.2f}GB")
         logger.info(f"Per-model memory allocation: {per_model_memory_gb} ({model_count} models)")
 
         return per_model_memory, per_model_memory_gb

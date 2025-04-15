@@ -84,19 +84,65 @@ if hasattr(torch.backends, "mps") and torch.backends.mps.is_built():
         pass
 
 
-def get_available_devices() -> Dict[str, bool]:
+def get_available_devices() -> Dict[str, Any]:
     """
-    Get a dictionary of available devices.
+    Get a dictionary of available devices and details.
 
     Returns:
-        Dictionary with device types as keys and availability as values
+        Dictionary with device types as keys and availability/details as values
     """
-    return {
-        CPU: True,  # CPU is always available
-        CUDA: torch.cuda.is_available(),
-        MPS: MPS_AVAILABLE,
-        XLA: XLA_AVAILABLE
-    }
+    devices = {CPU: {"available": True}}
+
+    # CUDA detection
+    cuda_available = torch.cuda.is_available()
+    if cuda_available:
+        devices[CUDA] = {
+            "available": True,
+            "count": torch.cuda.device_count(),
+            "name": torch.cuda.get_device_name(0) if torch.cuda.device_count() > 0 else None,
+            "capability": torch.cuda.get_device_capability(0) if torch.cuda.device_count() > 0 else None
+        }
+    else:
+        devices[CUDA] = {"available": False}
+
+    # MPS detection (Apple Silicon)
+    mps_available = False
+    mps_name = None
+    if hasattr(torch.backends, "mps") and torch.backends.mps.is_built():
+        try:
+            if torch.backends.mps.is_available():
+                torch.zeros(1).to("mps")
+                mps_available = True
+                mps_name = "Apple Silicon"
+        except Exception:
+            pass
+    devices[MPS] = {"available": mps_available, "name": mps_name}
+
+    # XLA/TPU detection
+    xla_available = False
+    xla_devices = []
+    try:
+        import torch_xla.core.xla_model as xm # type: ignore[import]
+        xla_devices = xm.get_xla_supported_devices()
+        if xla_devices:
+            xla_available = True
+    except Exception:
+        pass
+    devices[XLA] = {"available": xla_available, "devices": xla_devices}
+
+    # WSL2 GPU detection (Windows Subsystem for Linux)
+    if os.name == 'nt':
+        try:
+            import subprocess
+            result = subprocess.run(['wsl', '--status'], capture_output=True, text=True)
+            if 'Default Version: 2' in result.stdout:
+                # Check for CUDA in WSL2
+                wsl_cuda = torch.cuda.is_available()
+                devices['wsl2_cuda'] = {"available": wsl_cuda}
+        except Exception:
+            pass
+
+    return devices
 
 
 def get_optimal_device() -> str:
@@ -109,11 +155,11 @@ def get_optimal_device() -> str:
     """
     devices = get_available_devices()
 
-    if devices[CUDA]:
+    if devices[CUDA]["available"]:
         return CUDA
-    elif devices[XLA]:
+    elif devices[XLA]["available"]:
         return XLA
-    elif devices[MPS]:
+    elif devices[MPS]["available"]:
         return MPS
     else:
         return CPU
