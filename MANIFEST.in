@@ -1,0 +1,3 @@
+include inferno/README.md
+include inferno/requirements.txt
+recursive-include inferno *.py

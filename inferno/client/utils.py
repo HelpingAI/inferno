@@ -1,0 +1,135 @@
+"""
+Utility functions for the Inferno client.
+"""
+
+import json
+import uuid
+from typing import Dict, Any, List, Union, Optional, Generator
+from datetime import datetime
+
+from .exceptions import InfernoAPIError
+
+
+def generate_request_id() -> str:
+    """
+    Generate a unique request ID.
+    
+    Returns:
+        str: A unique request ID
+    """
+    return f"req_{uuid.uuid4().hex}"
+
+
+def current_timestamp() -> int:
+    """
+    Get the current timestamp in seconds.
+    
+    Returns:
+        int: Current timestamp in seconds
+    """
+    return int(datetime.now().timestamp())
+
+
+def parse_stream_response(line: str) -> Optional[Dict[str, Any]]:
+    """
+    Parse a line from a streaming response.
+    
+    Args:
+        line: Line from the streaming response
+        
+    Returns:
+        Optional[Dict[str, Any]]: Parsed response or None if the line is empty or "[DONE]"
+    """
+    if not line or line.strip() == "" or line.strip() == "[DONE]":
+        return None
+    
+    # Remove "data: " prefix if present
+    if line.startswith("data: "):
+        line = line[6:]
+    
+    try:
+        return json.loads(line)
+    except json.JSONDecodeError:
+        return None
+
+
+def handle_error_response(response: Dict[str, Any]) -> None:
+    """
+    Handle an error response from the API.
+    
+    Args:
+        response: Response from the API
+        
+    Raises:
+        InfernoAPIError: If the response contains an error
+    """
+    if "error" in response:
+        error = response["error"]
+        message = error.get("message", "Unknown error")
+        code = error.get("code", "unknown_error")
+        status = error.get("status", 500)
+        raise InfernoAPIError(status, f"{code}: {message}", response)
+
+
+def prepare_messages(messages: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    """
+    Prepare messages for a chat completion request.
+    
+    Args:
+        messages: List of messages
+        
+    Returns:
+        List[Dict[str, str]]: Prepared messages
+    """
+    # Ensure all messages have the required fields
+    prepared_messages = []
+    for message in messages:
+        prepared_message = {
+            "role": message.get("role", "user"),
+            "content": message.get("content", "")
+        }
+        
+        # Add name if present
+        if "name" in message:
+            prepared_message["name"] = message["name"]
+            
+        prepared_messages.append(prepared_message)
+    
+    return prepared_messages
+
+
+def prepare_stop_sequences(stop: Optional[Union[str, List[str]]]) -> Optional[List[str]]:
+    """
+    Prepare stop sequences for a completion request.
+    
+    Args:
+        stop: Stop sequence(s)
+        
+    Returns:
+        Optional[List[str]]: Prepared stop sequences
+    """
+    if stop is None:
+        return None
+    
+    if isinstance(stop, str):
+        return [stop]
+    
+    return stop
+
+
+def calculate_usage(prompt_tokens: int, completion_tokens: int) -> Dict[str, int]:
+    """
+    Calculate token usage.
+    
+    Args:
+        prompt_tokens: Number of tokens in the prompt
+        completion_tokens: Number of tokens in the completion
+        
+    Returns:
+        Dict[str, int]: Token usage
+    """
+    return {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": prompt_tokens + completion_tokens
+    }

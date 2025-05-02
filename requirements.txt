@@ -1,0 +1,23 @@
+# Core dependencies
+llama-cpp-python>=0.2.0
+fastapi>=0.100.0
+uvicorn>=0.23.0
+typer>=0.9.0
+rich>=13.0.0
+pydantic>=2.0.0
+huggingface-hub>=0.16.0
+hf_xet
+requests>=2.28.0
+
+# Optional dependencies for RAM estimation
+psutil>=5.9.0
+nvidia-ml-py>=12.0.0
+
+# Development dependencies
+pytest>=7.0.0
+black>=23.0.0
+isort>=5.12.0
+
+# Optional dependencies for specific features
+# Uncomment if needed
+# pillow>=9.0.0  # For image handling in multimodal models
