@@ -6,10 +6,13 @@ import json
 import requests
 from typing import Dict, Any, List, Optional, Union, Generator, Iterator, Callable
 import time
+from dataclasses import asdict, is_dataclass
 
 from .config import InfernoConfig
 from .exceptions import InfernoAPIError, InfernoConnectionError, InfernoTimeoutError
+from .models import Message, Tool, ToolChoice # Import necessary models
 from .utils import (
+    MessagesInput, # Import the type alias
     generate_request_id,
     current_timestamp,
     parse_stream_response,
@@ -309,7 +312,7 @@ class ChatCompletion:
     def create(
         self,
         model: str,
-        messages: List[Dict[str, str]],
+        messages: MessagesInput, # Use the MessagesInput type alias
         temperature: float = 0.7,
         top_p: float = 0.95,
         n: int = 1,
@@ -320,24 +323,44 @@ class ChatCompletion:
         frequency_penalty: float = 0.0,
         logit_bias: Optional[Dict[str, float]] = None,
         user: Optional[str] = None,
+        tools: Optional[List[Tool]] = None, # Added tools
+        tool_choice: Optional[ToolChoice] = None, # Added tool_choice
     ) -> Union[Dict[str, Any], Iterator[Dict[str, Any]]]:
         """
         Create a chat completion.
-        
+
         Args:
-            model: ID of the model to use
-            messages: List of messages in the conversation
-            temperature: Sampling temperature
-            top_p: Nucleus sampling parameter
-            n: Number of chat completion choices to generate
+            model: ID of the model to use.
+            messages: A list of messages comprising the conversation so far.
+                Can be a list of `Message` dataclasses or a list of dictionaries
+                following the OpenAI format.
+                The `content` field can be a string or a list of content parts
+                (text or image_url) for multimodal input. Image URLs can be
+                data URIs (e.g., "data:image/jpeg;base64,...") or standard
+                HTTPS URLs.
+                Example (using dicts):
+                ```python
+                messages=[
+                    {"role": "user", "content": [
+                        {"type": "text", "text": "What's in this image?"},
+                        {"type": "image_url", "image_url": {"url": "https://..."}}
+                    ]}
+                ]
+                ```
+            temperature: Sampling temperature.
+            top_p: Nucleus sampling parameter.
+            n: Number of chat completion choices to generate.
             stream: Whether to stream the response
             stop: Up to 4 sequences where the API will stop generating further tokens
             max_tokens: Maximum number of tokens to generate
-            presence_penalty: Penalty for token presence
-            frequency_penalty: Penalty for token frequency
-            logit_bias: Modify the likelihood of specified tokens appearing in the completion
-            user: A unique identifier representing your end-user
-            
+            presence_penalty: Penalty for token presence.
+            frequency_penalty: Penalty for token frequency.
+            logit_bias: Modify the likelihood of specified tokens appearing in the completion.
+            user: A unique identifier representing your end-user.
+            tools: A list of tools the model may call. Currently only functions are supported.
+            tool_choice: Controls which tool is called by the model. "none" means no tool call,
+                         "auto" lets the model decide, and a specific tool name forces that tool.
+
         Returns:
             Union[Dict[str, Any], Iterator[Dict[str, Any]]]: Chat completion response
         """
@@ -366,10 +389,19 @@ class ChatCompletion:
             
         if logit_bias is not None:
             json_data["logit_bias"] = logit_bias
-            
+
         if user is not None:
             json_data["user"] = user
-        
+
+        # Add tools and tool_choice if provided
+        if tools is not None:
+            # Convert Tool dataclasses to dicts if necessary
+            json_data["tools"] = [asdict(tool) if is_dataclass(tool) else tool for tool in tools]
+
+        if tool_choice is not None:
+             # Convert ToolChoice dataclass to dict if necessary
+            json_data["tool_choice"] = asdict(tool_choice) if is_dataclass(tool_choice) else tool_choice
+
         # Make the request
         return self.client.request(
             method="POST",

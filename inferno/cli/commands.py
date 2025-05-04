@@ -305,11 +305,11 @@ def pull_model(
         console.print(f"[bold red]Error downloading model: {str(e)}[/bold red]")
         console.print(f"[dim]{traceback.format_exc()}[/dim]") # Print traceback for debugging
 
-@app.command("list")
-def list_models() -> None:
+def list_models_logic() -> None:
     """
-    List downloaded models.
+    Logic to list downloaded models.
     """
+    import datetime # Moved import inside the function
     from rich.panel import Panel
     from rich.text import Text
     import datetime
@@ -466,6 +466,59 @@ def list_models() -> None:
             ))
 
         console.print(quant_table)
+
+    # Add a RAM usage comparison panel if we have models
+    if models:
+        # Create a quantization comparison table
+        quant_table = Table(
+            title="RAM Usage by Quantization Type",
+            show_header=True,
+            header_style="bold cyan",
+            box=SIMPLE
+        )
+
+        quant_table.add_column("Quantization", style="yellow")
+        quant_table.add_column("Bits/Param", style="blue", justify="right")
+        quant_table.add_column("RAM Multiplier", style="magenta", justify="right")
+        quant_table.add_column("Description", style="green")
+
+        # Quantization info
+        quant_info = [
+            ("Q2_K", "~2.5", "1.15×", "2-bit quantization (lowest quality, smallest size)"),
+            ("Q3_K_M", "~3.5", "1.28×", "3-bit quantization (medium)"),
+            ("Q4_K_M", "~4.5", "1.40×", "4-bit quantization (balanced quality/size)"),
+            ("Q5_K_M", "~5.5", "1.65×", "5-bit quantization (better quality)"),
+            ("Q6_K", "~6.5", "1.80×", "6-bit quantization (high quality)"),
+            ("Q8_0", "~8.5", "2.00×", "8-bit quantization (very high quality)"),
+            ("F16", "16.0", "2.80×", "16-bit float (highest quality, largest size)")
+        ]
+
+        for quant, bits, multiplier, desc in quant_info:
+            quant_table.add_row(quant, bits, multiplier, desc)
+
+        # Only show the system RAM info if we have it
+        if system_ram > 0:
+            console.print(Panel(
+                Text(f"Your system has {system_ram:.1f} GB of RAM available", style="bold cyan"),
+                title="System RAM",
+                border_style="blue"
+            ))
+
+        console.print(quant_table)
+
+@app.command("list")
+def list_models() -> None:
+    """
+    List downloaded models.
+    """
+    list_models_logic()
+
+@app.command("ls", hidden=True)
+def ls_models() -> None:
+    """
+    Alias for 'list'.
+    """
+    list_models_logic()
 
 @app.command(name="remove", help="Remove a downloaded model")
 def remove_model(
@@ -1049,6 +1102,10 @@ def list_running_models() -> None:
 @app.command("run")
 def chat(
     model_string: str = typer.Argument(..., help="Name or filename of the model to chat with"),
+    n_gpu_layers: Optional[int] = typer.Option(None, help="Number of layers to offload to GPU (-1 for all)"),
+    n_ctx: Optional[int] = typer.Option(None, help="Context window size (overrides detection)"),
+    n_threads: Optional[int] = typer.Option(None, help="Number of threads to use for inference"),
+    use_mlock: bool = typer.Option(False, help="Lock model in memory"),
 ) -> None:
     """
     Interactive chat with a model.
@@ -1178,9 +1235,15 @@ def chat(
     # Load the model with detected context length if available
     try:
         llm = LLMInterface(model_name)
-        # Ensure detected_max_context is an integer, default to 4096 if None
-        n_ctx_to_load = int(detected_max_context) if detected_max_context is not None else 4096
-        llm.load_model(verbose=False, n_ctx=n_ctx_to_load)
+        # Prioritize user-provided context, then detected, then default
+        n_ctx_to_load = n_ctx or (int(detected_max_context) if detected_max_context is not None else 4096)
+        llm.load_model(
+            verbose=False,
+            n_ctx=n_ctx_to_load,
+            n_gpu_layers=n_gpu_layers,
+            n_threads=n_threads,
+            use_mlock=use_mlock
+        )
     except Exception as e:
         console.print(f"[bold red]Error loading model: {str(e)}[/bold red]")
         return
@@ -1299,7 +1362,13 @@ def chat(
                         context_size = int(value)
                         # Reload the model with new context size
                         console.print(f"[yellow]Reloading model with context size: {context_size}...[/yellow]")
-                        llm.load_model(n_ctx=context_size, verbose=False)
+                        llm.load_model(
+                            n_ctx=context_size,
+                            verbose=False,
+                            n_gpu_layers=n_gpu_layers, # Pass existing options during reload
+                            n_threads=n_threads,
+                            use_mlock=use_mlock
+                        )
                         console.print(f"[green]Context size set to: {context_size}[/green]")
                     except ValueError:
                         console.print(f"[red]Invalid context size: {value}. Must be an integer.[/red]")

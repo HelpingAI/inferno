@@ -45,6 +45,7 @@ class ChatRequest(BaseModel):
     messages: List[ChatMessage]
     stream: bool = True
     tools: Optional[List[Dict[str, Any]]] = None
+    tool_choice: Optional[Union[str, Dict[str, Any]]] = None # Added tool_choice
     format: Optional[Union[str, Dict[str, Any]]] = None
     options: Optional[Dict[str, Any]] = None
     keep_alive: Optional[str] = "5m"
@@ -335,6 +336,10 @@ async def chat(
         if request.format:
             chat_params["format"] = request.format
 
+        # Add tool_choice if provided
+        if request.tool_choice:
+            chat_params["tool_choice"] = request.tool_choice
+
         # Stream the response
         if request.stream:
             async def generate_stream():
@@ -355,7 +360,7 @@ async def chat(
                 }) + "\n"
 
                 # Generate chat completion - make sure we're not using streaming mode here
-                chat_params["stream"] = False  # Ensure we get a dictionary, not a generator
+                chat_params["stream"] = False # Ensure we get a dictionary, not a generator
                 completion = model.create_chat_completion(**chat_params)
 
                 # Final response with stats

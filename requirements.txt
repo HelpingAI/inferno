@@ -1,5 +1,6 @@
 # Core dependencies
-llama-cpp-python>=0.2.0
+# llama-cpp-python should be installed separately with appropriate hardware acceleration flags.
+# See README.md for instructions (e.g., CMAKE_ARGS="-DGGML_CUDA=on" pip install llama-cpp-python)
 fastapi>=0.100.0
 uvicorn>=0.23.0
 typer>=0.9.0

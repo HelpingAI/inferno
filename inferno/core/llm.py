@@ -4,7 +4,16 @@ LLM interface for Inferno using llama-cpp-python
 
 from typing import Dict, Any, List, Optional, Union, Generator, Callable
 
-from llama_cpp import Llama
+try:
+    from llama_cpp import Llama
+except ImportError:
+    raise ImportError(
+        "llama-cpp-python is not installed. "
+        "Please install it with hardware acceleration support *before* installing inferno. "
+        "See the 'Hardware Acceleration (llama-cpp-python)' section in README.md for instructions. "
+        "Example: CMAKE_ARGS='-DGGML_CUDA=on' pip install llama-cpp-python"
+    )
+
 from rich.console import Console
 
 from ..utils.config import config
@@ -212,6 +221,7 @@ class LLMInterface:
         stream: bool = False,
         stop: Optional[List[str]] = None,
         tools: Optional[List[Dict[str, Any]]] = None,
+        tool_choice: Optional[Union[str, Dict[str, Any]]] = None, # Added tool_choice
         format: Optional[Union[str, Dict[str, Any]]] = None,
     ) -> Union[Dict[str, Any], Generator[Dict[str, Any], None, None]]:
         """
@@ -223,6 +233,9 @@ class LLMInterface:
             top_p (float): Top-p sampling.
             stream (bool): Whether to stream the response.
             stop (Optional[List[str]]): List of strings to stop generation when encountered.
+            tools (Optional[List[Dict[str, Any]]]): List of tools the model may call.
+            tool_choice (Optional[Union[str, Dict[str, Any]]]): Controls which tool is called, if any.
+            format (Optional[Union[str, Dict[str, Any]]]): Format for structured output (e.g., 'json').
         Returns:
             Union[Dict[str, Any], Generator[Dict[str, Any], None, None]]: Chat completion result or generator for streaming.
         """
@@ -243,6 +256,9 @@ class LLMInterface:
                 top_p=top_p,
                 stream=True,
                 stop=stop or [],
+                tools=tools,
+                tool_choice=tool_choice,
+                response_format=format if isinstance(format, dict) else {"type": format} if format else None,
             )
         else:
             return self.llm.create_chat_completion(
@@ -252,6 +268,9 @@ class LLMInterface:
                 top_p=top_p,
                 stream=False,
                 stop=stop or [],
+                tools=tools,
+                tool_choice=tool_choice,
+                response_format=format if isinstance(format, dict) else {"type": format} if format else None,
             )
 
     def stream_chat_completion(
@@ -263,6 +282,7 @@ class LLMInterface:
         top_p: float = 0.95,
         stop: Optional[List[str]] = None,
         tools: Optional[List[Dict[str, Any]]] = None,
+        tool_choice: Optional[Union[str, Dict[str, Any]]] = None, # Added tool_choice
         format: Optional[Union[str, Dict[str, Any]]] = None,
     ) -> None:
         """
@@ -275,6 +295,7 @@ class LLMInterface:
             top_p (float): Top-p sampling.
             stop (Optional[List[str]]): List of strings to stop generation when encountered.
             tools (Optional[List[Dict[str, Any]]]): List of tools for function calling.
+            tool_choice (Optional[Union[str, Dict[str, Any]]]): Controls which tool is called, if any.
             format (Optional[Union[str, Dict[str, Any]]]): Format for structured output.
         """
         stream = self.create_chat_completion(
@@ -284,9 +305,18 @@ class LLMInterface:
             top_p=top_p,
             stream=True,
             stop=stop,
+            tools=tools,
+            tool_choice=tool_choice,
+            format=format,
         )
         for chunk in stream:
+            # Handle potential tool calls in stream
             if "choices" in chunk and len(chunk["choices"]) > 0:
+                delta = chunk["choices"][0].get("delta", {})
+                if "tool_calls" in delta and delta["tool_calls"]:
+                    # Process tool call chunk (often comes as a single chunk)
+                    # The callback might need adjustment if tool call info is needed
+                    pass # Or handle tool call streaming if necessary
                 if "delta" in chunk["choices"][0] and "content" in chunk["choices"][0]["delta"]:
                     content = chunk["choices"][0]["delta"]["content"]
                     callback(content)

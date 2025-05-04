@@ -11,7 +11,7 @@ with open("requirements.txt", encoding="utf-8") as f:
 setup(
     name="inferno-llm",
     version=version,
-    description="A powerful llama-cpp-python based LLM serving tool similar to Ollama",
+    description="Ignite your AI experience with Llama 3.3, DeepSeek-R1, Phi-4, Gemma 3, Mistral Small 3.1 and other cutting-edge language models - all running locally with blazing-fast performance.",
     long_description=long_description,
     long_description_content_type="text/markdown",
     author="HelpingAI",
