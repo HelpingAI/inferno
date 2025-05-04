@@ -253,14 +253,23 @@ def get_model(model_name: str, options: Optional[Dict[str, Any]] = None) -> LLMI
         try:
             loaded_models[model_name] = LLMInterface(model_name)
 
-            # Extract options if provided
-            n_gpu_layers = options.get("n_gpu_layers", None) if options else None
-            n_ctx = options.get("num_ctx", None) if options else None
-            verbose = options.get("verbose", False) if options else False
+            # Merge options from config and request
+            model_options = config.get("model_options", {}).copy()
+            if options:
+                model_options.update(options)
+
+            # Extract all supported options
+            n_gpu_layers = model_options.get("n_gpu_layers", None)
+            n_ctx = model_options.get("n_ctx", None) or model_options.get("num_ctx", None)
+            n_threads = model_options.get("n_threads", None)
+            use_mlock = model_options.get("use_mlock", False)
+            verbose = model_options.get("verbose", False)
 
             loaded_models[model_name].load_model(
                 n_gpu_layers=n_gpu_layers,
                 n_ctx=n_ctx,
+                n_threads=n_threads,
+                use_mlock=use_mlock,
                 verbose=verbose
             )
         except Exception as e:
@@ -508,14 +517,19 @@ async def create_embeddings(request: EmbeddingRequest, background_tasks: Backgro
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error generating embeddings: {str(e)}")
 
-def start_server(host: str = None, port: int = None) -> None:
+def start_server(host: str = None, port: int = None, model_options: Dict[str, Any] = None) -> None:
     """
     Start the API server.
     Args:
         host (str, optional): Host to bind to. Defaults to config value.
         port (int, optional): Port to bind to. Defaults to config value.
+        model_options (Dict[str, Any], optional): Options for model loading.
     """
     host = host or config.get("api_host", "127.0.0.1")
     port = port or config.get("api_port", 8000)
+    
+    # Store model options in config for use by get_model
+    if model_options:
+        config["model_options"] = model_options
     
     uvicorn.run(app, host=host, port=port)

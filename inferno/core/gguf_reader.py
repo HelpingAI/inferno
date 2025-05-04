@@ -6,10 +6,9 @@ This module provides utilities for reading and extracting metadata from GGUF fil
 
 import os
 import struct
-import mmap
 import enum
 import re # Import re module
-from typing import Dict, Any, List, Optional, Union, BinaryIO, Tuple
+from typing import Dict, Any, Optional, Union, Tuple
 from io import BufferedReader
 
 

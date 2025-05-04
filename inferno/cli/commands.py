@@ -8,10 +8,11 @@ from rich.console import Console
 from rich.table import Table
 from rich.prompt import Prompt
 from rich.box import SIMPLE
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from pathlib import Path # Import Path for better path handling
-
 from ..core.model_manager import ModelManager
+from ..core.quantizer import QuantizationMethod
+from ..core.quantizer import QuantizationMethod
 from ..core.llm import LLMInterface
 from ..api.server import start_server
 from ..core.ram_estimator import (
@@ -48,6 +49,10 @@ def run_model(
     model_string: str = typer.Argument(..., help="Model to run (format: 'name', 'repo_id' or 'repo_id:filename')"),
     host: Optional[str] = typer.Option(None, help="Host to bind the server to"),
     port: Optional[int] = typer.Option(None, help="Port to bind the server to"),
+    n_gpu_layers: Optional[int] = typer.Option(None, help="Number of layers to offload to GPU (-1 for all)"),
+    n_ctx: Optional[int] = typer.Option(None, help="Context window size"),
+    n_threads: Optional[int] = typer.Option(None, help="Number of threads to use for inference"),
+    use_mlock: bool = typer.Option(False, help="Lock model in memory"),
 ) -> None:
     """
     Start a model server (downloads if needed).
@@ -163,19 +168,34 @@ def run_model(
             console.print(f"[yellow]Error detecting context length: {str(e)}. Using default (4096)[/yellow]")
             detected_max_context = 4096
 
-    # Load the model with detected context length if available
+    # Load the model with provided options
     try:
         llm = LLMInterface(model_name)
-        # Ensure detected_max_context is an integer, default to 4096 if None
-        n_ctx_to_load = int(detected_max_context) if detected_max_context is not None else 4096
-        llm.load_model(verbose=False, n_ctx=n_ctx_to_load)
+        # Use provided context length or fallback to detected/default
+        n_ctx_to_load = n_ctx or (int(detected_max_context) if detected_max_context is not None else 4096)
+        llm.load_model(
+            verbose=False,
+            n_ctx=n_ctx_to_load,
+            n_gpu_layers=n_gpu_layers,
+            n_threads=n_threads,
+            use_mlock=use_mlock
+        )
     except Exception as e:
         console.print(f"[bold red]Error loading model: {str(e)}[/bold red]")
         return
 
     # Start the server
     console.print(f"[bold blue]Starting Inferno server with model {model_name}...[/bold blue]")
-    start_server(host=host, port=port)
+    # Create options dictionary for model configuration
+    model_options = {
+        "n_gpu_layers": n_gpu_layers,
+        "n_ctx": n_ctx,
+        "n_threads": n_threads,
+        "use_mlock": use_mlock,
+    }
+    
+    # Start server with model options
+    start_server(host=host, port=port, model_options=model_options)
 
 @app.command("pull")
 def pull_model(
@@ -1320,6 +1340,172 @@ def chat(
 
         # Add extra spacing after the response
         console.print("")
+
+def list_quantization_methods(use_imatrix: bool = False) -> None:
+    """Display available quantization methods."""
+    console.print(QuantizationMethod.list_methods(use_imatrix))
+
+@app.command(name="quantize")
+def quantize_command(
+    model: Optional[str] = typer.Argument(None, help="Name or HF repo of the model to quantize (format: 'name' or 'hf:org/model')"),
+    output: Optional[str] = typer.Argument(None, help="Name for the quantized output (optional for HF models)"),
+    method: str = typer.Option("q4_k_m", help="Quantization method (use '--method list' to see available methods)"),
+    imatrix: bool = typer.Option(False, help="Use importance matrix quantization"),
+    train_data: Optional[str] = typer.Option(None, help="Training data file for imatrix quantization"),
+    split: bool = typer.Option(False, help="Split the model into smaller parts"),
+    split_size: Optional[str] = typer.Option(None, help="Maximum size for split parts (e.g. '2G')")
+):
+    """Quantize a model to a different format."""
+    # Handle list method without requiring model arguments
+    if method == "list":
+        list_quantization_methods(imatrix)
+        return
+
+    # Require model argument
+    if model is None:
+        console.print("[red]Error: MODEL argument is required for quantization[/red]")
+        console.print("\nTo see available quantization methods, use: inferno quantize --method list")
+        console.print("\nExample usage:")
+        console.print("  Local model:  inferno quantize model_name output_name --method q4_k_m")
+        console.print("  HuggingFace: inferno quantize hf:org/model --method q4_k_m")
+        raise typer.Exit(1)
+
+    manager = ModelManager()
+    model_name = model
+
+
+    # Handle HuggingFace model loading
+    if model.startswith("hf:"):
+        repo_id = model[3:]  # Remove 'hf:' prefix
+        
+        # Show available quantization methods first
+        console.print("\n[bold cyan]Available Quantization Methods:[/bold cyan]")
+        methods_table = QuantizationMethod.list_methods()
+        console.print(methods_table)
+
+        # Let user select method
+        method = Prompt.ask(
+            "\nSelect quantization method",
+            choices=list(QuantizationMethod.METHODS.keys()),
+            default="q4_k_m"
+        )
+
+        # Show selected method details
+        method_info = QuantizationMethod.METHODS[method]
+        from rich.panel import Panel
+        from rich.text import Text
+
+        details = Text()
+        details.append("Selected Quantization Method:\n\n", style="bold cyan")
+        details.append(f"Method: {method}\n", style="green")
+        details.append(f"Description: {method_info['description']}\n", style="yellow")
+        details.append(f"Bits/Param: {method_info['bits']}\n", style="blue")
+        details.append(f"RAM Usage: {method_info['ram_multiplier']}\n", style="magenta")
+
+        console.print(Panel(
+            details,
+            title="Quantization Configuration",
+            border_style="blue"
+        ))
+
+        # Generate output name based on model and method
+        model_name = repo_id.split('/')[-1]
+        if output is None:
+            output = f"{model_name}-{method}"
+
+        # Ensure output path is in the models directory
+        output_path = Path(manager.models_dir) / f"{output}.gguf"
+        output = str(output_path)
+
+        # Confirm before downloading
+        if not Prompt.ask(f"\nProceed with downloading and quantizing {repo_id}?", choices=["y", "n"], default="y") == "y":
+            console.print("[yellow]Operation cancelled.[/yellow]")
+            return
+
+        # Download model
+        console.print(f"\n[yellow]Downloading raw model from {repo_id} for quantization...[/yellow]")
+        temp_model_path = None
+        try:
+            # Download the raw model to temp directory
+            model_name, temp_model_path = manager.download_raw_model(repo_id)
+            console.print(f"[bold green]Model {model_name} downloaded successfully[/bold green]")
+            
+            # Perform quantization
+            console.print(f"\n[bold blue]Quantizing model using method: {method}[/bold blue]")
+            
+            # Use temp_model_path directly for quantization
+            output_files = manager.quantize_model(
+                model_name=model_name,
+                output_name=output,
+                method=method,
+                use_imatrix=imatrix,
+                train_data=train_data,
+                split_model=split,
+                split_size=split_size
+            )
+
+            # Show results
+            console.print(f"\n[bold green]Successfully quantized model to:[/bold green]")
+            for f in output_files:
+                console.print(f"  - {f}")
+
+            # Show final model information
+            if output_files:
+                try:
+                    output_path = output_files[0]  # Use first output file
+                    info = simple_gguf_info(output_path)
+                    quant_type = info.get("quantization_type") or detect_quantization_from_filename(output_path)
+                    
+                    if quant_type:
+                        console.print(f"\n[cyan]Final quantization type: {quant_type}[/cyan]")
+
+                    # Show RAM requirements for quantized model
+                    ram_reqs = estimate_gguf_ram_requirements(output_path, verbose=False)
+                    if ram_reqs and quant_type in ram_reqs:
+                        ram_gb = ram_reqs[quant_type]
+                        ram_requirement = get_ram_requirement_string(ram_gb, colorize=True)
+                        console.print(f"[cyan]RAM requirement: {ram_requirement}[/cyan]")
+
+                except Exception as e:
+                    console.print(f"[yellow]Error analyzing output file: {str(e)}[/yellow]")
+
+        except Exception as e:
+            console.print(f"[bold red]Error downloading or quantizing model: {str(e)}[/bold red]")
+            if os.environ.get("INFERNO_DEBUG"):
+                import traceback
+                console.print(f"[dim]{traceback.format_exc()}[/dim]")
+            raise typer.Exit(1)
+        finally:
+            # Clean up temp directory if it exists
+            if temp_model_path and Path(temp_model_path).exists():
+                import shutil
+                shutil.rmtree(Path(temp_model_path).parent, ignore_errors=True)
+    elif output is None:
+        console.print("[red]Error: OUTPUT argument is required for local models[/red]")
+        raise typer.Exit(1)
+        
+
+@app.command(name="compare")
+def compare_command(
+    models: List[str] = typer.Argument(..., help="List of model names to compare")
+):
+    """Compare multiple models, showing size and metrics."""
+    try:
+        manager = ModelManager()
+        manager.compare_models(models)
+    except Exception as e:
+        console.print(f"[red]Error: {str(e)}[/red]")
+
+@app.command(name="estimate")
+def estimate_command(
+    model: str = typer.Argument(..., help="Name of the model to analyze")
+):
+    """Show estimated RAM usage for different quantization methods."""
+    try:
+        manager = ModelManager()
+        manager.estimate_ram_usage(model)
+    except Exception as e:
+        console.print(f"[red]Error: {str(e)}[/red]")
 
 @app.command("version")
 def version() -> None:

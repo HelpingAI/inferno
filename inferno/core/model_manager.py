@@ -11,10 +11,11 @@ import shutil
 
 from rich.console import Console
 from rich.prompt import Prompt
+from rich.table import Table
 from huggingface_hub import hf_hub_download, HfFileSystem
 
 from ..utils.config import config
-# Import the context length extractor
+from .quantizer import ModelQuantizer
 from ..core.ram_estimator import extract_max_context_from_gguf
 
 console = Console()
@@ -243,7 +244,7 @@ class ModelManager:
 
     def download_model(self, model_string: str, filename: Optional[str] = None) -> Tuple[str, Path]:
         """
-        Download a model from Hugging Face Hub.
+        Download a GGUF model from Hugging Face Hub.
         Args:
             model_string (str): The model string in format 'repo_id' or 'repo_id:filename'.
             filename (Optional[str]): Specific filename to download, overrides filename in model_string.
@@ -403,6 +404,156 @@ class ModelManager:
                     return model_info.get("path")
             return None
         return info["path"]
+
+    def quantize_model(
+        self,
+        model_name: str,
+        output_name: str,
+        method: str,
+        use_imatrix: bool = False,
+        train_data: Optional[str] = None,
+        split_model: bool = False,
+        split_size: Optional[str] = None
+    ) -> List[str]:
+        """
+        Quantize a model to a different format.
+        
+        Args:
+            model_name: Name of the source model
+            output_name: Name for the quantized model
+            method: Quantization method to use
+            use_imatrix: Whether to use importance matrix quantization
+            train_data: Path to training data for imatrix quantization
+            split_model: Whether to split the model
+            split_size: Maximum size for split parts (e.g. "2G")
+            
+        Returns:
+            List of paths to the quantized model files
+        """
+        # Get source model info
+        source_info = self.get_model_info(model_name)
+        if not source_info or "path" not in source_info:
+            raise ValueError(f"Source model {model_name} not found")
+
+        # Create output directory
+        output_dir = config.get_model_path(output_name)
+        output_dir.mkdir(exist_ok=True, parents=True)
+
+        # Initialize quantizer
+        quantizer = ModelQuantizer()
+
+        try:
+            # Quantize the model
+            output_base = output_dir / f"{output_name}.gguf"
+            output_files = quantizer.quantize_model(
+                input_model=source_info["path"],
+                output_model=str(output_base),
+                method=method,
+                use_imatrix=use_imatrix,
+                train_data=train_data,
+                split_model=split_model,
+                split_size=split_size
+            )
+
+            # Create info files for each output
+            for output_path in output_files:
+                output_path = Path(output_path)
+                model_info = source_info.copy()
+                model_info.update({
+                    "name": output_path.stem,
+                    "path": str(output_path),
+                    "quantized_from": model_name,
+                    "quantization_method": method,
+                    "quantization_type": "imatrix" if use_imatrix else "standard",
+                    "split_model": split_model
+                })
+
+                info_path = output_path.parent / "info.json"
+                with open(info_path, "w") as f:
+                    json.dump(model_info, f, indent=2)
+
+            return output_files
+
+        except Exception as e:
+            console.print(f"[bold red]Error quantizing model: {str(e)}[/bold red]")
+            # Clean up on error
+            if output_dir.exists():
+                shutil.rmtree(output_dir)
+            raise
+
+    def compare_models(self, model_names: List[str]) -> None:
+        """
+        Compare multiple models, showing size, quantization, and other metrics.
+        
+        Args:
+            model_names: List of model names to compare
+        """
+        model_paths = []
+        for name in model_names:
+            path = self.get_model_path(name)
+            if path:
+                model_paths.append(path)
+            else:
+                console.print(f"[yellow]Warning: Model {name} not found[/yellow]")
+
+        if model_paths:
+            quantizer = ModelQuantizer()
+            comparison = quantizer.compare_models(model_paths)
+            console.print(comparison)
+        else:
+            console.print("[red]No valid models to compare[/red]")
+
+    def estimate_ram_usage(self, model_name: str) -> None:
+        """
+        Show estimated RAM usage for different quantization methods.
+        
+        Args:
+            model_name: Name of the model to analyze
+        """
+        path = self.get_model_path(model_name)
+        if not path:
+            console.print(f"[red]Model {model_name} not found[/red]")
+            return
+
+        quantizer = ModelQuantizer()
+        estimates = quantizer.estimate_ram_usage(path)
+
+        table = Table(title=f"RAM Usage Estimates for {model_name}")
+        table.add_column("Method", style="cyan")
+        table.add_column("Estimated RAM", style="green", justify="right")
+        
+        for method, ram in sorted(estimates.items()):
+            table.add_row(method, f"{ram:.2f} GB")
+            
+        console.print(table)
+
+    def download_raw_model(self, repo_id: str) -> Tuple[str, Path]:
+        """
+        Download a raw model from Hugging Face Hub into a temporary directory.
+        Args:
+            repo_id (str): The Hugging Face repository ID.
+        Returns:
+            Tuple[str, Path]: (model_name, temp_path)
+        """
+        from huggingface_hub import snapshot_download
+        import tempfile
+        
+        model_name = repo_id.split("/")[-1]
+        temp_dir = tempfile.mkdtemp(prefix=f"inferno_{model_name}_")
+
+        try:
+            console.print(f"[yellow]Downloading model files from {repo_id}...[/yellow]")
+            local_dir = snapshot_download(
+                repo_id=repo_id,
+                local_dir=temp_dir,
+                local_dir_use_symlinks=False
+            )
+            return model_name, Path(local_dir)
+            
+        except Exception as e:
+            # Clean up on error
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            raise RuntimeError(f"Error downloading model: {str(e)}")
 
     def copy_model(self, source_model: str, destination_model: str) -> bool:
         """

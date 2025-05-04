@@ -1,5 +1,5 @@
 from setuptools import setup, find_packages
-
+from inferno import __version__ as version
 # Read the contents of the README file
 with open("README.md", encoding="utf-8") as f:
     long_description = f.read()
@@ -10,7 +10,7 @@ with open("requirements.txt", encoding="utf-8") as f:
 
 setup(
     name="inferno-llm",
-    version="0.1.0",
+    version=version,
     description="A powerful llama-cpp-python based LLM serving tool similar to Ollama",
     long_description=long_description,
     long_description_content_type="text/markdown",

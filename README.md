@@ -11,7 +11,7 @@
 
   <!-- Badges -->
   <p>
-    <a href="#"><img src="https://img.shields.io/badge/License-MIT-blue?style=flat-square" alt="License"></a>
+    <a href="LICENSE"><img src="https://img.shields.io/badge/License-HelpingAI%20Open%20Source-blue?style=flat-square" alt="License"></a>
     <a href="#"><img src="https://img.shields.io/badge/Python-3.9+-blue?style=flat-square&logo=python&logoColor=white" alt="Python Version"></a>
     <a href="#"><img src="https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey?style=flat-square" alt="Platform"></a>
   </p>
@@ -24,6 +24,13 @@
   <img src="https://img.shields.io/badge/GPU-Accelerated-76B900?style=for-the-badge&logo=nvidia&logoColor=white" alt="GPU Accelerated">
   <img src="https://img.shields.io/badge/API-OpenAI%20Compatible-000000?style=for-the-badge&logo=openai&logoColor=white" alt="OpenAI Compatible">
   <img src="https://img.shields.io/badge/Models-Hugging%20Face-FFD21E?style=for-the-badge&logo=huggingface&logoColor=white" alt="Hugging Face">
+</div>
+
+## 📚 Documentation
+
+<div align="center">
+  <h3><a href="https://deepwiki.com/HelpingAI/inferno">📖 Read the Full Documentation</a></h3>
+  <p>Comprehensive guides, API references, and examples available at <code>deepwiki.com/HelpingAI/inferno</code></p>
 </div>
 
 ## ✨ Overview
@@ -44,7 +51,7 @@ Inferno is a powerful tool for running Large Language Models (LLMs) locally on y
 - **📊 Embeddings Support:** Generate embeddings from models
 - **⚠️ RAM Requirement Warnings:** Automatic warnings about RAM requirements for different model sizes
 - **🔍 Max Context Detection:** Automatically detects and displays maximum context length from GGUF files
-- **📈 Quantization Comparison:** View RAM usage by different quantization types
+- **📈 Quantization Tools:** Convert models between different quantization levels with visual comparison and importance matrix support
 - **🔄 Keep-Alive Control:** Configure model unloading behavior with keep-alive settings
 - **🛠️ Advanced Configuration:** Set custom parameters like threads, batch size, and RoPE settings
 
@@ -86,6 +93,9 @@ python -m inferno --help
 | `inferno copy <source> <dest>` | Copy a model to a new name |
 | `inferno show <model>` | Show detailed model information |
 | `inferno ps` | List running models |
+| `inferno quantize <model> <output>` | Quantize a model to a different format |
+| `inferno compare <models...>` | Compare multiple models (size, metrics) |
+| `inferno estimate <model>` | Show RAM usage estimates for quantization |
 | `inferno version` | Show version information |
 
 ## 📋 Usage Guide
@@ -106,6 +116,88 @@ When downloading models, Inferno will:
 - Show maximum context length for each model
 - Provide a comparison of RAM usage by quantization type
 - Warn if your system has insufficient RAM
+
+### Model Quantization
+
+Inferno provides an interactive quantization interface:
+
+```bash
+# Quantize a HuggingFace model (interactive)
+inferno quantize hf:Qwen/Qwen3-0.6B
+
+# The command will:
+# 1. Show available methods with RAM estimates
+# 2. Let you select the preferred method
+# 3. Download and convert the model
+# 4. Save in the inferno models directory
+```
+
+#### Interactive Quantization UI
+
+When you run the quantize command, you'll see:
+
+1. A table of available methods showing:
+   - Method name (e.g., q4_k_m)
+   - Bits per parameter
+   - RAM multiplier (e.g., 1.40× model size)
+   - Description and use case
+
+2. RAM Usage Examples:
+   For a 3GB gguf model file:
+   - q2_k: ~3.45GB RAM (3GB × 1.15)
+   - q4_k_m: ~4.20GB RAM (3GB × 1.40)
+   - q8_0: ~6.00GB RAM (3GB × 2.00)
+   - f16: ~8.40GB RAM (3GB × 2.80)
+
+#### Available Methods
+
+| Method | Bits/Param | RAM Usage | Best For |
+|--------|------------|-----------|----------|
+| q2_k   | ~2.5 bits | 1.15× size| Minimum RAM usage, lower quality |
+| q3_k_m | ~3.5 bits | 1.28× size| Good balance of RAM/quality |
+| q4_k_m | ~4.5 bits | 1.40× size| Best general-purpose choice |
+| q5_k_m | ~5.5 bits | 1.65× size| Better quality, more RAM |
+| q6_k   | ~6.5 bits | 1.80× size| High quality, high RAM |
+| q8_0   | ~8.5 bits | 2.00× size| Very high quality |
+| f16    | 16.0 bits | 2.80× size| Maximum quality, highest RAM |
+
+RAM usage consists of two parts:
+
+#### RAM Usage Calculation (Recommended)
+
+> [!NOTE]
+> The following RAM usage estimates are based on how the Hugging Face `transformers` library loads models in FP16 (float16) precision. We use the FP16 model file size as the baseline for these calculations in this README. Actual RAM usage may vary depending on backend and quantization.
+
+1. **Base Model RAM:**  
+    The FP16 model file size is roughly 2× the number of parameters in billions:
+    - 1B parameters ≈ 2GB (FP16) file size
+    - 3B parameters ≈ 6GB (FP16) file size
+    - 7B parameters ≈ 14GB (FP16) file size
+
+    Multiply by quantization factor for estimated RAM:
+    - 2GB (gguf model) × 1.40 (q4_k_m) ≈ **2.8GB estimated RAM**
+    - 6GB (gguf model) × 1.40 (q4_k_m) ≈ **8.4GB estimated RAM**
+
+2. **Context RAM:**  
+    Additional RAM is needed for the context window (per billion parameters):
+    - 4K context ≈ **+0.2GB RAM**
+    - 8K context ≈ **+0.4GB RAM**
+    - 16K context ≈ **+0.8GB RAM**
+    - 32K context ≈ **+1.6GB RAM**
+
+> [!NOTE]
+> You can run models on systems with less RAM than recommended, but expect slower performance and possible swapping to disk.
+
+
+#### Importance Matrix Quantization
+
+For better quality at the same size, use importance matrix quantization:
+
+| Method | Description |
+|--------|-------------|
+| iq3_m  | 3-bit importance-weighted |
+| iq4_nl | 4-bit non-linear (best accuracy) |
+| iq4_xs | 4-bit extra small size |
 
 ### List Downloaded Models
 

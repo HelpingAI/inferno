@@ -6,12 +6,10 @@ import json
 import os
 import requests
 import math
-import struct
-import mmap
 import re
-from .gguf_reader import simple_gguf_info, debug_gguf_context_length
+from .gguf_reader import simple_gguf_info
 from pathlib import Path
-from typing import Any, Dict, Optional, Union, List, Tuple
+from typing import Any, Dict, Optional, List
 
 try:
     import psutil
