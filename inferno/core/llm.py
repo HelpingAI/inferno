@@ -215,7 +215,7 @@ class LLMInterface:
     def create_chat_completion(
         self,
         messages: List[Dict[str, Any]],
-        max_tokens: int = 256,
+        max_tokens: Optional[int] = None, # Changed default from 256 to None
         temperature: float = 0.7,
         top_p: float = 0.95,
         stream: bool = False,
@@ -277,7 +277,7 @@ class LLMInterface:
         self,
         messages: List[Dict[str, Any]],
         callback: Callable[[str], None],
-        max_tokens: int = 256,
+        max_tokens: Optional[int] = None, # Changed default from 256 to None
         temperature: float = 0.7,
         top_p: float = 0.95,
         stop: Optional[List[str]] = None,

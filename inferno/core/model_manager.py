@@ -279,11 +279,13 @@ class ModelManager:
 
         console.print(f"[bold blue]Downloading {filename} from {repo_id}...[/bold blue]")
         try:
+            # hf_hub_download uses tqdm internally, which is reasonable for a progress bar.
+            # Replacing it with rich progress requires more complex integration or a different download method.
             model_path_str = hf_hub_download(
                 repo_id=repo_id,
                 filename=filename,
                 local_dir=model_dir,
-                # Consider adding progress bar options if needed
+                # progress=True is the default
             )
             model_path = Path(model_path_str)
         except Exception as e:
@@ -307,10 +309,10 @@ class ModelManager:
         max_context = None
         try:
             max_context = extract_max_context_from_gguf(str(model_path))
-            if max_context:
-                console.print(f"[cyan]Detected and saved maximum context length: {max_context:,}[/cyan]")
-            else:
-                console.print("[yellow]Could not detect maximum context length from downloaded file.[/yellow]")
+            # if max_context:
+            #     console.print(f"[cyan]Detected and saved maximum context length: {max_context:,}[/cyan]")
+            # else:
+            #     console.print("[yellow]Could not detect maximum context length from downloaded file.[/yellow]")
         except Exception as e:
             console.print(f"[yellow]Error detecting context length post-download: {str(e)}[/yellow]")
         model_info["max_context"] = max_context # Store detected length (or None)
