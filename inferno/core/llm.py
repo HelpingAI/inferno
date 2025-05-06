@@ -4,10 +4,13 @@ LLM interface for Inferno using llama-cpp-python
 
 from typing import Dict, Any, List, Optional, Union, Generator, Callable
 
+# Only raise the import error when the module is actually used, not when imported
+# This allows the package to be installed without llama-cpp-python
+_llama_import_error = None
 try:
     from llama_cpp import Llama
-except ImportError:
-    raise ImportError(
+except ImportError as e:
+    _llama_import_error = ImportError(
         "llama-cpp-python is not installed. "
         "Please install it with hardware acceleration support *before* installing inferno. "
         "See the 'Hardware Acceleration (llama-cpp-python)' section in README.md for instructions. "
@@ -360,3 +363,4 @@ class LLMInterface:
         }
 
         return response
+

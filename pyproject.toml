@@ -1,0 +1,58 @@
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "inferno-llm"
+dynamic = ["version"]
+description = "Ignite your AI experience with Llama 3.3, DeepSeek-R1, Phi-4, Gemma 3, Mistral Small 3.1 and other cutting-edge language models - all running locally with blazing-fast performance."
+readme = "README.md"
+authors = [
+    {name = "HelpingAI", email = "info@helpingai.co"}
+]
+requires-python = ">=3.9"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+# Define core dependencies directly here instead of from requirements.txt
+dependencies = [
+    "fastapi>=0.100.0",
+    "uvicorn>=0.23.0",
+    "typer>=0.9.0",
+    "rich>=13.0.0",
+    "pydantic>=2.0.0",
+    "huggingface-hub>=0.16.0",
+    "hf_xet",
+    "requests>=2.28.0",
+    "psutil>=5.9.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "black>=23.0.0",
+    "isort>=5.12.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/HelpingAI/inferno"
+Repository = "https://github.com/HelpingAI/inferno"
+
+[project.scripts]
+inferno = "inferno.cli.commands:app"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.dynamic]
+version = {attr = "inferno.version.__version__"}
+
+[tool.setuptools.packages.find]
+include = ["inferno*"]
