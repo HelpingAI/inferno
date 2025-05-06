@@ -169,51 +169,79 @@ class LLMInterface:
     def create_completion(
         self,
         prompt: str,
-        max_tokens: int = 256,
-        temperature: float = 0.7,
+        max_tokens: Optional[int] = 16,
+        temperature: float = 0.8,
         top_p: float = 0.95,
+        min_p: float = 0.05,
+        top_k: int = 40,
+        repeat_penalty: float = 1.1,
         stream: bool = False,
         stop: Optional[List[str]] = None,
+        seed: Optional[int] = None,
         suffix: Optional[str] = None,
-        images: Optional[List[str]] = None,
-        system: Optional[str] = None,
-        template: Optional[str] = None,
-        context: Optional[List[int]] = None,
-        raw: bool = False,
-        format: Optional[Union[str, Dict[str, Any]]] = None,
+        echo: bool = False,
+        frequency_penalty: float = 0.0,
+        presence_penalty: float = 0.0,
+        grammar: Optional[Any] = None,
+        logit_bias: Optional[Dict[int, float]] = None,
     ) -> Union[Dict[str, Any], Generator[Dict[str, Any], None, None]]:
         """
         Create a completion for the given prompt.
         Args:
             prompt (str): The prompt to complete.
-            max_tokens (int): Maximum number of tokens to generate.
+            max_tokens (Optional[int]): Maximum number of tokens to generate.
             temperature (float): Sampling temperature.
             top_p (float): Top-p sampling.
+            min_p (float): Minimum probability threshold for token selection.
+            top_k (int): Top-k sampling.
+            repeat_penalty (float): Penalty for repeating tokens.
             stream (bool): Whether to stream the response.
             stop (Optional[List[str]]): List of strings to stop generation when encountered.
+            seed (Optional[int]): Random seed for reproducible generation.
+            suffix (Optional[str]): String to append to the generated text.
+            echo (bool): Whether to include the prompt in the response.
+            frequency_penalty (float): Penalty for token frequency.
+            presence_penalty (float): Penalty for token presence.
+            grammar (Optional[Any]): Grammar for constrained generation.
+            logit_bias (Optional[Dict[int, float]]): Token bias for generation.
         Returns:
             Union[Dict[str, Any], Generator[Dict[str, Any], None, None]]: Completion result or generator for streaming.
         """
+        if _llama_import_error:
+            raise _llama_import_error
+            
         if self.llm is None:
             self.load_model()
-        if stream:
-            return self.llm.create_completion(
-                prompt=prompt,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                top_p=top_p,
-                stream=True,
-                stop=stop or [],
-            )
-        else:
-            return self.llm.create_completion(
-                prompt=prompt,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                top_p=top_p,
-                stream=False,
-                stop=stop or [],
-            )
+            
+        # Prepare parameters
+        params = {
+            "prompt": prompt,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "top_p": top_p,
+            "min_p": min_p,
+            "top_k": top_k,
+            "repeat_penalty": repeat_penalty,
+            "stream": stream,
+            "stop": stop or [],
+            "echo": echo,
+        }
+        
+        # Add optional parameters only if they're provided and not default
+        if seed is not None:
+            params["seed"] = seed
+        if suffix is not None:
+            params["suffix"] = suffix
+        if frequency_penalty != 0.0:
+            params["frequency_penalty"] = frequency_penalty
+        if presence_penalty != 0.0:
+            params["presence_penalty"] = presence_penalty
+        if grammar is not None:
+            params["grammar"] = grammar
+        if logit_bias is not None:
+            params["logit_bias"] = logit_bias
+            
+        return self.llm.create_completion(**params)
 
     def create_chat_completion(
         self,
@@ -363,4 +391,5 @@ class LLMInterface:
         }
 
         return response
+
 
