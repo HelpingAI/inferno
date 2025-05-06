@@ -17,7 +17,6 @@ from .utils import (
     current_timestamp,
     parse_stream_response,
     handle_error_response,
-    prepare_messages,
     prepare_stop_sequences,
     calculate_usage
 )
@@ -367,7 +366,7 @@ class ChatCompletion:
         # Prepare request data
         json_data = {
             "model": model,
-            "messages": prepare_messages(messages),
+            "messages": messages,
             "temperature": temperature,
             "top_p": top_p,
             "stream": stream,
@@ -500,3 +499,5 @@ class Model:
             method="GET",
             path=f"/models/{model}",
         )
+
+

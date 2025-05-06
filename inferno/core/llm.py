@@ -3,6 +3,7 @@ LLM interface for Inferno using llama-cpp-python
 """
 
 from typing import Dict, Any, List, Optional, Union, Generator, Callable
+import time
 
 # Only raise the import error when the module is actually used, not when imported
 # This allows the package to be installed without llama-cpp-python
@@ -61,10 +62,40 @@ class LLMInterface:
         use_mmap: bool = True,
         rope_freq_base: Optional[float] = None,
         rope_freq_scale: Optional[float] = None,
-        low_vram: bool = False,
+        # New parameters from latest llama-cpp-python
+        split_mode: Optional[int] = None,
+        main_gpu: int = 0,
+        tensor_split: Optional[List[float]] = None,
+        rpc_servers: Optional[str] = None,
+        vocab_only: bool = False,
+        kv_overrides: Optional[Dict[str, Union[bool, int, float, str]]] = None,
+        seed: Optional[int] = None,
+        n_ubatch: Optional[int] = None,
+        n_threads_batch: Optional[int] = None,
+        rope_scaling_type: Optional[int] = None,
+        pooling_type: Optional[int] = None,
+        yarn_ext_factor: Optional[float] = None,
+        yarn_attn_factor: Optional[float] = None,
+        yarn_beta_fast: Optional[float] = None,
+        yarn_beta_slow: Optional[float] = None,
+        yarn_orig_ctx: Optional[int] = None,
+        logits_all: bool = False,
+        embedding: bool = False,
+        offload_kqv: bool = True,
+        flash_attn: bool = False,
+        no_perf: bool = False,
+        last_n_tokens_size: Optional[int] = None,
+        lora_base: Optional[str] = None,
+        lora_path: Optional[str] = None,
+        lora_scale: Optional[float] = None,
+        numa: Union[bool, int] = False,
+        chat_format: Optional[str] = None,
+        type_k: Optional[int] = None,
+        type_v: Optional[int] = None,
+        spm_infill: bool = False,
     ) -> None:
         """
-        Load the model into memory.
+        Load the model into memory with support for all llama-cpp-python parameters.
         Args:
             n_gpu_layers (Optional[int]): Number of layers to offload to GPU (-1 for all).
             n_ctx (Optional[int]): Context size.
@@ -75,7 +106,36 @@ class LLMInterface:
             use_mmap (bool): Whether to use memory mapping for the model.
             rope_freq_base (Optional[float]): RoPE base frequency.
             rope_freq_scale (Optional[float]): RoPE frequency scaling factor.
-            low_vram (bool): Whether to optimize for low VRAM usage.
+            split_mode (Optional[int]): How to split the model across GPUs.
+            main_gpu (int): Main GPU to use based on split mode.
+            tensor_split (Optional[List[float]]): How to distribute tensors across GPUs.
+            rpc_servers (Optional[str]): Comma separated list of RPC servers.
+            vocab_only (bool): Only load the vocabulary, not weights.
+            kv_overrides (Optional[Dict]): Key-value overrides for the model.
+            seed (Optional[int]): RNG seed, None for random.
+            n_ubatch (Optional[int]): Physical batch size.
+            n_threads_batch (Optional[int]): Threads for batch processing.
+            rope_scaling_type (Optional[int]): RoPE scaling type.
+            pooling_type (Optional[int]): Pooling type for embeddings.
+            yarn_ext_factor (Optional[float]): YaRN extrapolation mix factor.
+            yarn_attn_factor (Optional[float]): YaRN magnitude scaling factor.
+            yarn_beta_fast (Optional[float]): YaRN low correction dim.
+            yarn_beta_slow (Optional[float]): YaRN high correction dim.
+            yarn_orig_ctx (Optional[int]): YaRN original context size.
+            logits_all (bool): Return logits for all tokens.
+            embedding (bool): Enable embedding mode.
+            offload_kqv (bool): Offload K, Q, V to GPU.
+            flash_attn (bool): Use flash attention.
+            no_perf (bool): Disable performance measurements.
+            last_n_tokens_size (Optional[int]): Max tokens in last_n_tokens deque.
+            lora_base (Optional[str]): Path to base model for LoRA.
+            lora_path (Optional[str]): Path to LoRA file.
+            lora_scale (Optional[float]): Scale for LoRA adaptations.
+            numa (Union[bool, int]): NUMA policy.
+            chat_format (Optional[str]): Chat format for chat completions.
+            type_k (Optional[int]): KV cache data type for K.
+            type_v (Optional[int]): KV cache data type for V.
+            spm_infill (bool): Use SPM pattern for infill.
         Raises:
             ValueError: If model loading fails.
         """
@@ -119,7 +179,6 @@ class LLMInterface:
                         except (ValueError, TypeError):
                              console.print(f"[yellow]Warning: Could not convert detected rope_freq_base '{base_val}' to float.[/yellow]")
 
-
                     # Check for rope_freq_scale using common keys
                     scale_val = metadata.get("llama.rope.scale") or metadata.get("rope_freq_scale") or metadata.get("rope.scale") or metadata.get("rope.freq_scale")
                     if scale_val is not None and local_rope_freq_scale is None:
@@ -127,7 +186,6 @@ class LLMInterface:
                             local_rope_freq_scale = float(scale_val)
                             console.print(f"[dim]Detected RoPE frequency scale: {local_rope_freq_scale}[/dim]")
                          except (ValueError, TypeError) as e:
-                             # This is the specific error we are fixing
                              console.print(f"[yellow]Warning: Could not convert detected rope_freq_scale '{scale_val}' to float: {e}. Skipping parameter.[/yellow]")
                              local_rope_freq_scale = None # Ensure it remains None if conversion fails
 
@@ -144,14 +202,63 @@ class LLMInterface:
                 "n_batch": n_batch or 512,
                 "use_mlock": use_mlock,
                 "use_mmap": use_mmap,
-                "low_vram": low_vram,
+                "embedding": embedding,  # Enable embeddings by default
+                "offload_kqv": offload_kqv,
+                "flash_attn": flash_attn,
+                "main_gpu": main_gpu,
+                "vocab_only": vocab_only,
+                "logits_all": logits_all,
+                "numa": numa,
+                "spm_infill": spm_infill,
             }
 
-            # Only add rope parameters if they are valid floats
+            # Add optional parameters only if they're not None
             if local_rope_freq_base is not None:
                 params["rope_freq_base"] = local_rope_freq_base
             if local_rope_freq_scale is not None:
                 params["rope_freq_scale"] = local_rope_freq_scale
+            if split_mode is not None:
+                params["split_mode"] = split_mode
+            if tensor_split is not None:
+                params["tensor_split"] = tensor_split
+            if rpc_servers is not None:
+                params["rpc_servers"] = rpc_servers
+            if kv_overrides is not None:
+                params["kv_overrides"] = kv_overrides
+            if seed is not None:
+                params["seed"] = seed
+            if n_ubatch is not None:
+                params["n_ubatch"] = n_ubatch
+            if n_threads_batch is not None:
+                params["n_threads_batch"] = n_threads_batch
+            if rope_scaling_type is not None:
+                params["rope_scaling_type"] = rope_scaling_type
+            if pooling_type is not None:
+                params["pooling_type"] = pooling_type
+            if yarn_ext_factor is not None:
+                params["yarn_ext_factor"] = yarn_ext_factor
+            if yarn_attn_factor is not None:
+                params["yarn_attn_factor"] = yarn_attn_factor
+            if yarn_beta_fast is not None:
+                params["yarn_beta_fast"] = yarn_beta_fast
+            if yarn_beta_slow is not None:
+                params["yarn_beta_slow"] = yarn_beta_slow
+            if yarn_orig_ctx is not None:
+                params["yarn_orig_ctx"] = yarn_orig_ctx
+            if last_n_tokens_size is not None:
+                params["last_n_tokens_size"] = last_n_tokens_size
+            if lora_base is not None:
+                params["lora_base"] = lora_base
+            if lora_path is not None:
+                params["lora_path"] = lora_path
+            if lora_scale is not None:
+                params["lora_scale"] = lora_scale
+            if chat_format is not None:
+                params["chat_format"] = chat_format
+            if type_k is not None:
+                params["type_k"] = type_k
+            if type_v is not None:
+                params["type_v"] = type_v
 
             self.llm = Llama(**params)
 
@@ -246,111 +353,86 @@ class LLMInterface:
     def create_chat_completion(
         self,
         messages: List[Dict[str, Any]],
-        max_tokens: Optional[int] = None, # Changed default from 256 to None
+        max_tokens: Optional[int] = None,
         temperature: float = 0.7,
         top_p: float = 0.95,
+        top_k: int = 40,
+        min_p: float = 0.05,
         stream: bool = False,
         stop: Optional[List[str]] = None,
+        seed: Optional[int] = None,
         tools: Optional[List[Dict[str, Any]]] = None,
-        tool_choice: Optional[Union[str, Dict[str, Any]]] = None, # Added tool_choice
+        tool_choice: Optional[Union[str, Dict[str, Any]]] = None,
         format: Optional[Union[str, Dict[str, Any]]] = None,
+        frequency_penalty: float = 0.0,
+        presence_penalty: float = 0.0,
+        repeat_penalty: float = 1.1,
+        logit_bias: Optional[Dict[int, float]] = None,
+        grammar: Optional[Any] = None,
     ) -> Union[Dict[str, Any], Generator[Dict[str, Any], None, None]]:
         """
         Create a chat completion for the given messages.
         Args:
-            messages (List[Dict[str, str]]): List of chat messages.
-            max_tokens (int): Maximum number of tokens to generate.
+            messages (List[Dict[str, Any]]): List of chat messages.
+            max_tokens (Optional[int]): Maximum number of tokens to generate.
             temperature (float): Sampling temperature.
             top_p (float): Top-p sampling.
+            top_k (int): Top-k sampling.
+            min_p (float): Minimum probability threshold for token selection.
             stream (bool): Whether to stream the response.
             stop (Optional[List[str]]): List of strings to stop generation when encountered.
+            seed (Optional[int]): Random seed for reproducible generation.
             tools (Optional[List[Dict[str, Any]]]): List of tools the model may call.
             tool_choice (Optional[Union[str, Dict[str, Any]]]): Controls which tool is called, if any.
             format (Optional[Union[str, Dict[str, Any]]]): Format for structured output (e.g., 'json').
+            frequency_penalty (float): Penalty for token frequency.
+            presence_penalty (float): Penalty for token presence.
+            repeat_penalty (float): Penalty for repeating tokens.
+            logit_bias (Optional[Dict[int, float]]): Token bias for generation.
+            grammar (Optional[Any]): Grammar for constrained generation.
         Returns:
             Union[Dict[str, Any], Generator[Dict[str, Any], None, None]]: Chat completion result or generator for streaming.
         """
+        if _llama_import_error:
+            raise _llama_import_error
+            
         if self.llm is None:
             self.load_model()
-        processed_messages: List[Dict[str, str]] = messages.copy()
-        system_messages = [m for m in processed_messages if m.get("role") == "system"]
-        non_system_messages = [m for m in processed_messages if m.get("role") != "system"]
-        if system_messages:
-            processed_messages = [system_messages[0]] + non_system_messages
-        else:
-            processed_messages = non_system_messages
-        if stream:
-            return self.llm.create_chat_completion(
-                messages=processed_messages,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                top_p=top_p,
-                stream=True,
-                stop=stop or [],
-                tools=tools,
-                tool_choice=tool_choice,
-                response_format=format if isinstance(format, dict) else {"type": format} if format else None,
-            )
-        else:
-            return self.llm.create_chat_completion(
-                messages=processed_messages,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                top_p=top_p,
-                stream=False,
-                stop=stop or [],
-                tools=tools,
-                tool_choice=tool_choice,
-                response_format=format if isinstance(format, dict) else {"type": format} if format else None,
-            )
+            
+        # Use messages directly without processing
+        params = {
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "top_p": top_p,
+            "top_k": top_k,
+            "min_p": min_p,
+            "stream": stream,
+            "stop": stop or [],
+        }
+        
+        # Add optional parameters only if they're provided and not default
+        if seed is not None:
+            params["seed"] = seed
+        if tools:
+            params["tools"] = tools
+        if tool_choice:
+            params["tool_choice"] = tool_choice
+        if format:
+            params["response_format"] = format if isinstance(format, dict) else {"type": format}
+        if frequency_penalty != 0.0:
+            params["frequency_penalty"] = frequency_penalty
+        if presence_penalty != 0.0:
+            params["presence_penalty"] = presence_penalty
+        if repeat_penalty != 1.1:
+            params["repeat_penalty"] = repeat_penalty
+        if logit_bias:
+            params["logit_bias"] = logit_bias
+        if grammar:
+            params["grammar"] = grammar
+            
+        return self.llm.create_chat_completion(**params)
 
-    def stream_chat_completion(
-        self,
-        messages: List[Dict[str, Any]],
-        callback: Callable[[str], None],
-        max_tokens: Optional[int] = None, # Changed default from 256 to None
-        temperature: float = 0.7,
-        top_p: float = 0.95,
-        stop: Optional[List[str]] = None,
-        tools: Optional[List[Dict[str, Any]]] = None,
-        tool_choice: Optional[Union[str, Dict[str, Any]]] = None, # Added tool_choice
-        format: Optional[Union[str, Dict[str, Any]]] = None,
-    ) -> None:
-        """
-        Stream a chat completion with a callback for each token.
-        Args:
-            messages (List[Dict[str, Any]]): List of chat messages.
-            callback (Callable[[str], None]): Function to call with each token.
-            max_tokens (int): Maximum number of tokens to generate.
-            temperature (float): Sampling temperature.
-            top_p (float): Top-p sampling.
-            stop (Optional[List[str]]): List of strings to stop generation when encountered.
-            tools (Optional[List[Dict[str, Any]]]): List of tools for function calling.
-            tool_choice (Optional[Union[str, Dict[str, Any]]]): Controls which tool is called, if any.
-            format (Optional[Union[str, Dict[str, Any]]]): Format for structured output.
-        """
-        stream = self.create_chat_completion(
-            messages=messages,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            top_p=top_p,
-            stream=True,
-            stop=stop,
-            tools=tools,
-            tool_choice=tool_choice,
-            format=format,
-        )
-        for chunk in stream:
-            # Handle potential tool calls in stream
-            if "choices" in chunk and len(chunk["choices"]) > 0:
-                delta = chunk["choices"][0].get("delta", {})
-                if "tool_calls" in delta and delta["tool_calls"]:
-                    # Process tool call chunk (often comes as a single chunk)
-                    # The callback might need adjustment if tool call info is needed
-                    pass # Or handle tool call streaming if necessary
-                if "delta" in chunk["choices"][0] and "content" in chunk["choices"][0]["delta"]:
-                    content = chunk["choices"][0]["delta"]["content"]
-                    callback(content)
 
     def create_embeddings(
         self,
@@ -374,20 +456,46 @@ class LLMInterface:
         else:
             input_texts = input
 
+        # Track timing
+        start_time = time.time()
+
         # Generate embeddings for each input text
         embeddings = []
+        total_tokens = 0
+        
         for text in input_texts:
-            # Use llama-cpp-python's embedding method
-            embedding = self.llm.embed(text)
+            # Use llama-cpp-python's embed method with the latest parameters
+            # The embed method now supports normalize, truncate, and return_count
+            try:
+                # Try with return_count to get token count
+                embedding, tokens = self.llm.embed(
+                    text, 
+                    normalize=True,
+                    truncate=truncate,
+                    return_count=True
+                )
+                total_tokens += tokens
+            except TypeError:
+                # Fallback for older versions that don't support return_count
+                embedding = self.llm.embed(
+                    text,
+                    normalize=True,
+                    truncate=truncate
+                )
+            
             embeddings.append(embedding)
+
+        # Calculate durations
+        end_time = time.time()
+        total_duration = int((end_time - start_time) * 1e9)  # Convert to nanoseconds
 
         # Create response
         response = {
             "model": self.model_name,
             "embeddings": embeddings,
-            "total_duration": 0,  # Could be improved with actual timing
-            "load_duration": 0,   # Could be improved with actual timing
-            "prompt_eval_count": len(input_texts)
+            "total_duration": total_duration,
+            "load_duration": 0,  # We don't track load time separately
+            "prompt_eval_count": total_tokens if total_tokens > 0 else len(input_texts)
         }
 
         return response

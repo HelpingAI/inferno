@@ -8,25 +8,19 @@ from rich.console import Console
 from rich.table import Table
 from rich.prompt import Prompt
 from rich.box import SIMPLE
-from typing import Optional, Dict, Any, List
+from typing import Optional, List
 from pathlib import Path # Import Path for better path handling
 from typing import Optional
+import datetime
 from ..core.model_manager import ModelManager
 from ..core.quantizer import QuantizationMethod
-from ..core.quantizer import QuantizationMethod
-# Removed duplicate import: from ..core.quantizer import QuantizationMethod
 from ..core.llm import LLMInterface
 from ..api.server import start_server
 from ..core.ram_estimator import (
     estimate_gguf_ram_requirements,
     get_ram_requirement_string,
     get_hardware_suggestion,
-    estimate_ram_for_all_models,
-    detect_gpu_vram,
-    print_gpu_compatibility,
-    suggest_hardware,
     get_system_ram,
-    estimate_from_huggingface_repo,
     detect_quantization_from_filename
 )
 from ..core.gguf_reader import simple_gguf_info, debug_gguf_context_length
@@ -166,17 +160,11 @@ def run_model(
             from ..core.ram_estimator import extract_max_context_from_gguf
             detected_max_context = extract_max_context_from_gguf(model_path)
             if detected_max_context:
-                console.print(f"[cyan]Detected maximum context length: {detected_max_context:,}[/cyan]")
+                console.print(f"[cyan]Detected maximum context length: {detected_max_context:,}, but we will use 4096[/cyan]")
             else:
                 # Handle case where function returns None without raising an error
                 console.print("[yellow]Could not detect maximum context length, using default (4096)[/yellow]")
                 detected_max_context = 4096
-            # if detected_max_context:
-            #     console.print(f"[cyan]Detected maximum context length: {detected_max_context:,}[/cyan]")
-            # else:
-            #     # Handle case where function returns None without raising an error
-            #     console.print("[yellow]Could not detect maximum context length, using default (4096)[/yellow]")
-            #     detected_max_context = 4096
         except Exception as e:
             console.print(f"[yellow]Error detecting context length: {str(e)}. Using default (4096)[/yellow]")
             detected_max_context = 4096
@@ -184,8 +172,8 @@ def run_model(
     # Load the model with provided options
     try:
         llm = LLMInterface(model_name)
-        # Use provided context length or fallback to detected/default
-        n_ctx_to_load = n_ctx or (int(detected_max_context) if detected_max_context is not None else 4096)
+        # Use provided context length or default to 4096
+        n_ctx_to_load = n_ctx or 4096
         llm.load_model(
             verbose=False,
             n_ctx=n_ctx_to_load,
@@ -239,17 +227,11 @@ def pull_model(
                 from ..core.ram_estimator import extract_max_context_from_gguf
                 max_context = extract_max_context_from_gguf(model_path)
                 if max_context:
-                    console.print(f"[cyan]Detected maximum context length: {max_context:,}[/cyan]")
+                    console.print(f"[cyan]Detected maximum context length: {max_context:,}, but we will use 4096 by default[/cyan]")
                 else:
                     # Handle case where function returns None without raising an error
                     console.print("[yellow]Could not detect maximum context length, using default (4096)[/yellow]")
                     max_context = 4096
-                # if max_context:
-                #     console.print(f"[cyan]Detected maximum context length: {max_context:,}[/cyan]")
-                # else:
-                #     # Handle case where function returns None without raising an error
-                #     console.print("[yellow]Could not detect maximum context length, using default (4096)[/yellow]")
-                #     max_context = 4096
             except Exception as e:
                 console.print(f"[yellow]Error detecting context length: {str(e)}. Using default (4096)[/yellow]")
                 max_context = 4096
@@ -351,21 +333,18 @@ def pull_model(
 
 def list_models_logic() -> None:
     """
-    Logic to list downloaded models.
+    List downloaded models.
     """
-    import datetime # Moved import inside the function
-    from rich.panel import Panel
-    from rich.text import Text
-    import datetime
+    # Get system RAM for comparison
+    system_ram = get_system_ram()
 
+    # Get list of models
     models = model_manager.list_models()
 
     if not models:
-        console.print("[yellow]No models found. Use 'inferno pull' to download a model.[/yellow]")
+        console.print("[yellow]No models found.[/yellow]")
+        console.print("[cyan]Use 'inferno pull <repo_id>' to download a model.[/cyan]")
         return
-
-    # Get system RAM for comparison
-    system_ram = get_system_ram()
 
     # Create main table for models
     table = Table(
@@ -376,9 +355,8 @@ def list_models_logic() -> None:
         expand=True
     )
 
+    # Only include the essential columns
     table.add_column("Name", style="cyan")
-    table.add_column("Repository", style="green")
-    table.add_column("Filename", style="blue")
     table.add_column("Size", style="magenta", justify="right")
     table.add_column("Quantization", style="yellow")
     table.add_column("RAM Usage", style="red", justify="right")
@@ -420,7 +398,6 @@ def list_models_logic() -> None:
         ram_usage = "Unknown"
         ram_color = "white"
         max_context = "Unknown"
-        context_source = "" # Add source info
 
         if file_path and os.path.exists(file_path):
             try:
@@ -429,17 +406,18 @@ def list_models_logic() -> None:
                 ctx_len = gguf_info.get("context_length")
                 if ctx_len:
                     max_context = f"{ctx_len:,}"
-                    context_source = gguf_info.get("context_length_source", "") # Get source if available
 
-                # Estimate RAM requirements (simple_gguf_info doesn't do this)
+                # Get RAM requirements
                 ram_reqs = estimate_gguf_ram_requirements(file_path, verbose=False)
                 if ram_reqs:
-                    # Determine quant_type for RAM lookup (use detected or fallback)
-                    quant_for_ram = quant_type if quant_type != "Unknown" and quant_type in ram_reqs else "Q4_K_M"
-                    if quant_for_ram in ram_reqs:
-                        ram_gb = ram_reqs[quant_for_ram]
-                        ram_usage = get_ram_requirement_string(ram_gb, colorize=False)
-
+                    # Use detected quantization or fall back to Q4_K_M
+                    fallback_quant = "Q4_K_M"
+                    quant_to_use = quant_type if quant_type and quant_type in ram_reqs else fallback_quant
+                    
+                    if quant_to_use in ram_reqs:
+                        ram_gb = ram_reqs[quant_to_use]
+                        ram_usage = f"{ram_gb:.1f} GB"
+                        
                         # Color code based on system RAM
                         if system_ram > 0:
                             if ram_gb > system_ram:
@@ -459,14 +437,13 @@ def list_models_logic() -> None:
                     console.print(f"[dim]Error analyzing {filename} for list: {e}[/dim]")
                 pass
 
+        # Add row with only the essential columns
         table.add_row(
             model["name"],
-            model.get("repo_id", "Unknown"),
-            filename,
             file_size,
             quant_type,
             f"[{ram_color}]{ram_usage}[/{ram_color}]",
-            max_context, # Use context length from simple_gguf_info
+            max_context,
             downloaded_at,
         )
 
@@ -474,6 +451,10 @@ def list_models_logic() -> None:
 
     # Add a RAM usage comparison panel if we have models
     if models:
+        # Import Panel and Text from rich if not already imported
+        from rich.panel import Panel
+        from rich.text import Text
+
         # Create a quantization comparison table
         quant_table = Table(
             title="RAM Usage by Quantization Type",
@@ -511,44 +492,13 @@ def list_models_logic() -> None:
 
         console.print(quant_table)
 
-    # Add a RAM usage comparison panel if we have models
-    if models:
-        # Create a quantization comparison table
-        quant_table = Table(
-            title="RAM Usage by Quantization Type",
-            show_header=True,
-            header_style="bold cyan",
-            box=SIMPLE
-        )
-
-        quant_table.add_column("Quantization", style="yellow")
-        quant_table.add_column("Bits/Param", style="blue", justify="right")
-        quant_table.add_column("RAM Multiplier", style="magenta", justify="right")
-        quant_table.add_column("Description", style="green")
-
-        # Quantization info
-        quant_info = [
-            ("Q2_K", "~2.5", "1.15×", "2-bit quantization (lowest quality, smallest size)"),
-            ("Q3_K_M", "~3.5", "1.28×", "3-bit quantization (medium)"),
-            ("Q4_K_M", "~4.5", "1.40×", "4-bit quantization (balanced quality/size)"),
-            ("Q5_K_M", "~5.5", "1.65×", "5-bit quantization (better quality)"),
-            ("Q6_K", "~6.5", "1.80×", "6-bit quantization (high quality)"),
-            ("Q8_0", "~8.5", "2.00×", "8-bit quantization (very high quality)"),
-            ("F16", "16.0", "2.80×", "16-bit float (highest quality, largest size)")
-        ]
-
-        for quant, bits, multiplier, desc in quant_info:
-            quant_table.add_row(quant, bits, multiplier, desc)
-
-        # Only show the system RAM info if we have it
-        if system_ram > 0:
-            console.print(Panel(
-                Text(f"Your system has {system_ram:.1f} GB of RAM available", style="bold cyan"),
-                title="System RAM",
-                border_style="blue"
-            ))
-
-        console.print(quant_table)
+    # Remove the duplicate quantization table
+    # The following duplicate code block has been removed:
+    # if models:
+    #     # Create a quantization comparison table
+    #     quant_table = Table(...)
+    #     ...
+    #     console.print(quant_table)
 
 @app.command("list")
 def list_models() -> None:
@@ -602,6 +552,16 @@ def remove_model(
         console.print(f"[bold green]Model {model_string} removed successfully[/bold green]")
     else:
         console.print(f"[bold red]Error removing model {model_string}[/bold red]")
+
+@app.command(name="rm", hidden=True)
+def rm_model(
+    model_string: str = typer.Argument(..., help="Name or filename of the model to remove"),
+    force: bool = typer.Option(False, "--force", "-f", help="Force removal without confirmation"),
+) -> None:
+    """
+    Alias for 'remove'.
+    """
+    remove_model(model_string, force)
 
 @app.command("copy")
 def copy_model(
@@ -1267,7 +1227,7 @@ def chat(
             from ..core.ram_estimator import extract_max_context_from_gguf
             detected_max_context = extract_max_context_from_gguf(model_path)
             if detected_max_context:
-                console.print(f"[cyan]Detected maximum context length: {detected_max_context:,}[/cyan]")
+                console.print(f"[cyan]Detected maximum context length: {detected_max_context:,}, but we will use 4096[/cyan]")
             else:
                 # Handle case where function returns None without raising an error
                 console.print("[yellow]Could not detect maximum context length, using default (4096)[/yellow]")
@@ -1276,11 +1236,11 @@ def chat(
             console.print(f"[yellow]Error detecting context length: {str(e)}. Using default (4096)[/yellow]")
             detected_max_context = 4096
 
-    # Load the model with detected context length if available
+    # Load the model with 4096 context by default
     try:
         llm = LLMInterface(model_name)
-        # Prioritize user-provided context, then detected, then default
-        n_ctx_to_load = n_ctx or (int(detected_max_context) if detected_max_context is not None else 4096)
+        # Prioritize user-provided context, otherwise use 4096
+        n_ctx_to_load = n_ctx or 4096
         llm.load_model(
             verbose=False,
             n_ctx=n_ctx_to_load,
@@ -1313,6 +1273,9 @@ def chat(
     /reset - Reset chat history and system prompt
     """
 
+    # Always enable Markdown formatting
+    os.environ["INFERNO_MARKDOWN"] = "1"
+
     while True:
         # Get user input
         user_input = input("\n> ")
@@ -1342,6 +1305,8 @@ def chat(
                 system_prompt = None
                 console.print("[yellow]All settings reset.[/yellow]")
                 continue
+                
+            # Markdown command removed - always enabled
 
             elif cmd == "/show" and len(cmd_parts) >= 2 and cmd_parts[1].lower() == "context":
                 # Access context size via the underlying llama object's n_ctx() method
@@ -1418,28 +1383,38 @@ def chat(
 
         # Use a buffer to collect the response
         response_buffer = ""
-
-        def print_token(token):
-            nonlocal response_buffer
-            response_buffer += token
-            console.print(token, end="", highlight=False)
-
-        llm.stream_chat_completion(
+        import time
+        import sys
+        
+        # Use create_chat_completion with stream=True
+        stream = llm.create_chat_completion(
             messages=messages,
-            callback=print_token,
+            stream=True,
         )
-
-        # Get the full response to add to history
-        response = llm.create_chat_completion(
-            messages=messages,
-            stream=False,
-        )
-
-        assistant_message = response["choices"][0]["message"]["content"]
-        messages.append({"role": "assistant", "content": assistant_message})
-
-        # Add extra spacing after the response
+        
+        # Ghost text effect settings
+        ghost_delay = 0.005  # Delay between characters for ghost effect
+        
+        # Process the stream with ghost text effect
+        for chunk in stream:
+            if "choices" in chunk and len(chunk["choices"]) > 0:
+                delta = chunk["choices"][0].get("delta", {})
+                if "content" in delta and delta["content"] is not None:
+                    token = delta["content"]
+                    response_buffer += token
+                    
+                    # Apply ghost text effect - print each character with a slight delay
+                    for char in token:
+                        console.print(char, end="", highlight=False)
+                        time.sleep(ghost_delay)
+                        sys.stdout.flush()  # Ensure output is displayed immediately
+        
+        # Add a newline after streaming is complete
         console.print("")
+        
+        
+        # Add the collected response to history
+        messages.append({"role": "assistant", "content": response_buffer})
 
 def list_quantization_methods(use_imatrix: bool = False) -> None:
     """Display available quantization methods."""
