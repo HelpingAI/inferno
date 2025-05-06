@@ -8,6 +8,8 @@ from rich.console import Console
 from rich.table import Table
 from rich.prompt import Prompt
 from rich.box import SIMPLE
+from rich.panel import Panel
+from rich.text import Text
 from typing import Optional, List
 from pathlib import Path # Import Path for better path handling
 from typing import Optional
@@ -25,7 +27,7 @@ from ..core.ram_estimator import (
 )
 from ..core.gguf_reader import simple_gguf_info, debug_gguf_context_length
 
-app: typer.Typer = typer.Typer(help="Inferno - A llama-cpp-python based LLM serving tool")
+app: typer.Typer = typer.Typer(help="Inferno - Run Llama 3.3, DeepSeek-R1, Phi-4, Gemma 3, Mistral Small 3.1, and other state-of-the-art language models locally with scorching-fast performance. Inferno provides an intuitive CLI and an OpenAI/Ollama-compatible API, putting the inferno of AI innovation directly in your hands.")
 console: Console = Console()
 
 model_manager: ModelManager = ModelManager()
@@ -936,12 +938,8 @@ def show_model(
             if os.environ.get("INFERNO_DEBUG"):
                 console.print(f"[yellow]Error extracting context length: {str(e)}[/yellow]")
 
-    # Estimate RAM requirements
+    # Show RAM requirements
     try:
-        from rich.table import Table
-        from rich.panel import Panel
-        from rich.text import Text
-
         ram_reqs = estimate_gguf_ram_requirements(file_path, verbose=False)
         if ram_reqs:
             # Get system RAM for comparison
@@ -1023,36 +1021,6 @@ def show_model(
                     )
 
             console.print(ram_table)
-
-            # Show context overhead in a separate table with better formatting
-            if "context_overhead" in ram_reqs:
-                ctx_table = Table(
-                    title="Context Length RAM Overhead",
-                    show_header=True,
-                    header_style="bold cyan",
-                    box=SIMPLE,
-                    expand=True,
-                    padding=(0, 2)  # Add horizontal padding for better readability
-                )
-
-                ctx_table.add_column("Context Length", style="blue", no_wrap=True)
-                ctx_table.add_column("Additional RAM", style="magenta", justify="right", no_wrap=True)
-                ctx_table.add_column("Total RAM (with Q4_K_M)", style="green", justify="right", no_wrap=True)
-
-                base_ram = ram_reqs.get(quant_type, ram_reqs.get("Q4_K_M", 0))
-
-                for ctx, ram in sorted(ram_reqs["context_overhead"].items()):
-                    if isinstance(ram, (int, float)):
-                        ctx_len = ctx.replace("Context ", "")
-                        total_ram = base_ram + ram
-
-                        ctx_table.add_row(
-                            ctx_len,
-                            f"+{ram:.2f} GB",
-                            get_ram_requirement_string(total_ram, colorize=True)
-                        )
-
-                console.print(ctx_table)
 
             # Show hardware suggestion with better formatting
             hardware_suggestion = get_hardware_suggestion(ram_reqs.get(quant_type, ram_reqs.get("Q4_K_M", 0)))
@@ -1383,18 +1351,13 @@ def chat(
 
         # Use a buffer to collect the response
         response_buffer = ""
-        import time
-        import sys
-        
+       
         # Use create_chat_completion with stream=True
         stream = llm.create_chat_completion(
             messages=messages,
             stream=True,
         )
-        
-        # Ghost text effect settings
-        ghost_delay = 0.005  # Delay between characters for ghost effect
-        
+
         # Process the stream with ghost text effect
         for chunk in stream:
             if "choices" in chunk and len(chunk["choices"]) > 0:
@@ -1403,11 +1366,8 @@ def chat(
                     token = delta["content"]
                     response_buffer += token
                     
-                    # Apply ghost text effect - print each character with a slight delay
                     for char in token:
-                        console.print(char, end="", highlight=False)
-                        time.sleep(ghost_delay)
-                        sys.stdout.flush()  # Ensure output is displayed immediately
+                        console.print(char, end="", highlight=True)
         
         # Add a newline after streaming is complete
         console.print("")
