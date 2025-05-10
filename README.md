@@ -307,6 +307,14 @@ inferno pull <repo_id>
 # Direct file download
 inferno pull <repo_id>:<filename.gguf>
 # Example: inferno pull google/gemma-1.1-7b-it-gguf:gemma-1.1-7b-it-Q4_K_M.gguf
+
+# HuggingFace prefix with repository ID
+inferno pull hf:<repo_id>
+# Example: inferno pull hf:mradermacher/DAN-Qwen3-1.7B-GGUF
+
+# HuggingFace prefix with repository ID and quantization
+inferno pull hf:<repo_id>:<quantization>
+# Example: inferno pull hf:mradermacher/DAN-Qwen3-1.7B-GGUF:Q2_K
 ```
 Inferno shows available GGUF files, sizes, and estimated RAM needed, warning if it exceeds your system's available RAM.
 

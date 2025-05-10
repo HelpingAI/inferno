@@ -32,16 +32,36 @@ class ModelManager:
 
     def parse_model_string(self, model_string: str) -> Tuple[str, Optional[str]]:
         """
-        Parse a model string in the format 'repo_id:filename' or just 'repo_id'.
+        Parse a model string in the following formats:
+        - 'repo_id:filename' - Standard format
+        - 'repo_id' - Just the repo ID
+        - 'hf:repo_id:quantization' - HuggingFace format with quantization
+        - 'hf:repo_id' - HuggingFace format without quantization
+        
         Args:
             model_string (str): The model string to parse.
         Returns:
             Tuple[str, Optional[str]]: (repo_id, filename)
         """
-        if ":" in model_string:
+        # Handle 'hf:' prefix for HuggingFace models
+        if model_string.startswith("hf:"):
+            # Remove the 'hf:' prefix
+            model_string = model_string[3:]
+            
+            if ":" in model_string:
+                # Format: hf:repo_id:quantization
+                repo_id, quantization = model_string.split(":", 1)
+                # We'll use the quantization to search for matching files later
+                return repo_id, quantization
+            else:
+                # Format: hf:repo_id
+                return model_string, None
+        elif ":" in model_string:
+            # Standard format: repo_id:filename
             repo_id, filename = model_string.split(":", 1)
             return repo_id, filename
         else:
+            # Just the repo ID
             return model_string, None
 
     def list_repo_gguf_files(self, repo_id: str) -> List[str]:
@@ -276,6 +296,29 @@ class ModelManager:
                     model_dir.rmdir()
                 raise ValueError(f"No GGUF file selected from repository {repo_id}")
             console.print(f"[green]Selected GGUF file: {filename}[/green]")
+        elif not filename.endswith(".gguf"):
+            # This might be a quantization identifier (e.g., Q2_K, Q4_K_M)
+            # Get list of files and find one matching the quantization
+            console.print(f"[yellow]Searching for model with quantization {filename} in {repo_id}...[/yellow]")
+            gguf_files = self.list_repo_gguf_files(repo_id)
+            
+            # Try to find a file that contains the quantization type
+            matching_files = [f for f in gguf_files if filename in f]
+            if matching_files:
+                filename = matching_files[0]
+                console.print(f"[green]Found matching file: {filename}[/green]")
+            else:
+                # No exact match found, try interactive selection
+                console.print(f"[yellow]No exact match for {filename}. Please select a file:[/yellow]")
+                selected_file = self.select_file_interactive(repo_id)
+                if not selected_file:
+                    if (model_dir / "info.json").exists():
+                        (model_dir / "info.json").unlink()
+                    if not any(model_dir.iterdir()): # Remove dir only if empty
+                        model_dir.rmdir()
+                    raise ValueError(f"No GGUF file selected from repository {repo_id}")
+                filename = selected_file
+                console.print(f"[green]Selected GGUF file: {filename}[/green]")
 
         console.print(f"[bold blue]Downloading {filename} from {repo_id}...[/bold blue]")
         try:

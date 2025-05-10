@@ -2,7 +2,7 @@
 Command-line interface for Inferno
 """
 
-import os # Ensure os is imported globally
+import os
 import typer
 from rich.console import Console
 from rich.table import Table
@@ -11,7 +11,7 @@ from rich.box import SIMPLE
 from rich.panel import Panel
 from rich.text import Text
 from typing import Optional, List
-from pathlib import Path # Import Path for better path handling
+from pathlib import Path
 from typing import Optional
 import datetime
 from ..core.model_manager import ModelManager
@@ -44,7 +44,7 @@ FALLBACK_RAM_REQUIREMENTS = {
 
 @app.command("serve")
 def run_model(
-    model_string: str = typer.Argument(..., help="Model to run (format: 'name', 'repo_id' or 'repo_id:filename')"),
+    model_string: str = typer.Argument(..., help="Model to run (format: 'name', 'repo_id', 'repo_id:filename', 'hf:repo_id', or 'hf:repo_id:quantization')"),
     host: Optional[str] = typer.Option(None, help="Host to bind the server to"),
     port: Optional[int] = typer.Option(None, help="Port to bind the server to"),
     n_gpu_layers: Optional[int] = typer.Option(None, help="Number of layers to offload to GPU (-1 for all)"),
@@ -54,6 +54,15 @@ def run_model(
 ) -> None:
     """
     Start a model server (downloads if needed).
+    
+    Supports multiple model string formats:
+    - 'name' - Name of a locally downloaded model
+    - 'repo_id' - Standard HuggingFace repository ID
+    - 'repo_id:filename' - Repository ID with specific filename
+    - 'hf:repo_id' - HuggingFace prefix with repository ID
+    - 'hf:repo_id:quantization' - HuggingFace prefix with repository ID and quantization type (e.g., Q2_K, Q4_K_M)
+    
+    Example: hf:mradermacher/DAN-Qwen3-1.7B-GGUF:Q2_K
     """
     # First check if this is a filename that already exists
     model_path = model_manager.get_model_path(model_string)
@@ -67,18 +76,22 @@ def run_model(
             # Fallback to using the string as model name
             model_name = model_string
     else:
-        # Parse the model string to see if it's a repo_id:filename format
-        repo_id, _ = model_manager.parse_model_string(model_string)
+        # Parse the model string to see if it's a repo_id:filename format, hf:repo_id or hf:repo_id:quantization
+        original_model_string = model_string
+        
+        # Handle hf: prefix for model name
+        if model_string.startswith("hf:"):
+            model_string = model_string[3:]  # Remove hf: prefix for model name derivation
+        
+        repo_id, _ = model_manager.parse_model_string(original_model_string)
         model_name = repo_id.split("/")[-1] if "/" in repo_id else repo_id
 
         # Check if model exists, if not try to download it
         if not model_manager.get_model_path(model_name):
             console.print(f"[yellow]Model {model_name} not found locally. Attempting to download...[/yellow]")
             try:
-                # We don't need to use the parsed values directly as download_model handles this
-                _ = model_manager.parse_model_string(model_string)  # Just to validate the format
-                # Download the model
-                model_name, _ = model_manager.download_model(model_string)
+                # Download the model with the original string (including hf: prefix if it exists)
+                model_name, _ = model_manager.download_model(original_model_string)
                 console.print(f"[bold green]Model {model_name} downloaded successfully[/bold green]")
             except Exception as e:
                 console.print(f"[bold red]Error downloading model: {str(e)}[/bold red]")
@@ -202,10 +215,16 @@ def run_model(
 
 @app.command("pull")
 def pull_model(
-    model_string: str = typer.Argument(..., help="Model to download (format: 'repo_id' or 'repo_id:filename')"),
+    model_string: str = typer.Argument(..., help="Model to download (format: 'repo_id', 'repo_id:filename', 'hf:repo_id', or 'hf:repo_id:quantization')"),
 ) -> None:
     """
     Download a model from Hugging Face without running it.
+    
+    Supports multiple formats:
+    - 'repo_id' - Standard HuggingFace repository ID
+    - 'repo_id:filename' - Repository ID with specific filename
+    - 'hf:repo_id' - HuggingFace prefix with repository ID
+    - 'hf:repo_id:quantization' - HuggingFace prefix with repository ID and quantization type (e.g., Q2_K, Q4_K_M)
     """
     import traceback # Import traceback for detailed error reporting
 
@@ -1082,8 +1101,14 @@ def chat(
     """
     Interactive chat with a model.
     """
-    # Ensure os is available in this scope if needed, though global import should work
-    # import os # This line is likely redundant if the global import is correct, but added as a safeguard
+    import base64
+    import re
+    try:
+        from PIL import Image
+        import io
+    except ImportError:
+        console.print("[yellow]PIL not installed. Image support will be limited.[/yellow]")
+        console.print("[yellow]Install with: pip install pillow[/yellow]")
 
     # First check if this is a filename that already exists
     model_path = model_manager.get_model_path(model_string)
@@ -1239,10 +1264,14 @@ def chat(
     /show context - Show the current and maximum context window size
     /clear or /cls - Clear the terminal screen
     /reset - Reset chat history and system prompt
+    /image <path> - Include an image in your next message
+    
+    Special syntax:
+    #image:path/to/image.jpg - Include an image in your message
     """
 
-    # Always enable Markdown formatting
-    os.environ["INFERNO_MARKDOWN"] = "1"
+    # Track if an image is pending for the next message
+    pending_image = None
 
     while True:
         # Get user input
@@ -1343,8 +1372,76 @@ def chat(
                 console.print(f"[red]Unknown command: {cmd}[/red]")
                 continue
 
-        # Add user message to history
-        messages.append({"role": "user", "content": user_input})
+        # Check for image references in the message
+        image_pattern = r'#image:(.*?)(?:\s|$)'
+        image_matches = re.findall(image_pattern, user_input)
+
+        if image_matches:
+            # This is a multimodal message with images
+            try:
+                # Start with text content
+                content_parts = []
+                
+                # Extract text without the image tags
+                text_content = re.sub(image_pattern, '', user_input).strip()
+                if text_content:
+                    content_parts.append({"type": "text", "text": text_content})
+                
+                # Process each image reference
+                for img_path in image_matches:
+                    img_path = img_path.strip()
+                    
+                    # Handle Windows paths with escaped backslashes in the regex match
+                    img_path = img_path.replace('\\\\', '\\')
+                    
+                    # Normalize path (handles both relative and absolute paths)
+                    img_path = os.path.normpath(img_path)
+                    
+                    if not os.path.exists(img_path):
+                        console.print(f"[red]Image file not found: {img_path}[/red]")
+                        continue
+                    
+                    try:
+                        # Validate image
+                        img = Image.open(img_path)
+                        img.verify()
+                        
+                        # Convert to base64
+                        with open(img_path, "rb") as img_file:
+                            img_data = img_file.read()
+                            base64_img = base64.b64encode(img_data).decode('utf-8')
+                        
+                        # Get MIME type based on file extension
+                        mime_type = "image/jpeg"  # Default
+                        if img_path.lower().endswith(".png"):
+                            mime_type = "image/png"
+                        elif img_path.lower().endswith(".gif"):
+                            mime_type = "image/gif"
+                        elif img_path.lower().endswith(".webp"):
+                            mime_type = "image/webp"
+                        
+                        # Add image part
+                        content_parts.append({
+                            "type": "image_url", 
+                            "image_url": {"url": f"data:{mime_type};base64,{base64_img}"}
+                        })
+                        console.print(f"[cyan]Image attached: {img_path}[/cyan]")
+                    except Exception as e:
+                        console.print(f"[red]Error processing image {img_path}: {str(e)}[/red]")
+                
+                # Create multimodal message if we have content parts
+                if content_parts:
+                    messages.append({"role": "user", "content": content_parts})
+                else:
+                    # Fallback to text-only if all images failed
+                    messages.append({"role": "user", "content": user_input})
+            except Exception as e:
+                console.print(f"[red]Error creating multimodal message: {str(e)}[/red]")
+                # Fallback to text-only
+                messages.append({"role": "user", "content": user_input})
+        else:
+            # Regular text message
+            messages.append({"role": "user", "content": user_input})
 
         # Generate response
         console.print("\n")  # Add extra spacing between user input and response
