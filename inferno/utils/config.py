@@ -5,7 +5,7 @@ Configuration management for Inferno
 import os
 import json
 from pathlib import Path
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, List
 
 # Default configuration
 default_config: Dict[str, Any] = {

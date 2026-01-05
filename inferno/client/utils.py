@@ -4,12 +4,11 @@ Utility functions for the Inferno client.
 
 import json
 import uuid
-from typing import Dict, Any, List, Union, Optional, Generator
+from typing import Dict, Any, List, Union, Optional
 from datetime import datetime
-from dataclasses import asdict, is_dataclass
 
 from .exceptions import InfernoAPIError
-from .models import Message, TextContentPart, ImageUrlContentPart # Import necessary models
+from .models import Message # Import necessary models
 
 
 # Type alias for input messages

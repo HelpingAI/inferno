@@ -2,27 +2,38 @@
 LLM interface for Inferno using llama-cpp-python
 """
 
-from typing import Dict, Any, List, Optional, Union, Generator, Callable
+from typing import Dict, Any, List, Optional, Union, Generator, TYPE_CHECKING
+import importlib
 import time
-
-# Only raise the import error when the module is actually used, not when imported
-# This allows the package to be installed without llama-cpp-python
-_llama_import_error = None
-try:
-    from llama_cpp import Llama
-except ImportError as e:
-    _llama_import_error = ImportError(
-        "llama-cpp-python is not installed. "
-        "Please install it with hardware acceleration support *before* installing inferno. "
-        "See the 'Hardware Acceleration (llama-cpp-python)' section in README.md for instructions. "
-        "Example: CMAKE_ARGS='-DGGML_CUDA=on' pip install llama-cpp-python"
-    )
 
 from rich.console import Console
 
 from ..utils.config import config
 from .model_manager import ModelManager
 from .gguf_reader import simple_gguf_info
+
+# Use TYPE_CHECKING so static analyzers can see the Llama type, but avoid importing
+# the heavy llama-cpp-python package at module import time.
+if TYPE_CHECKING:
+    from llama_cpp import Llama  # type: ignore
+else:
+    Llama = Any  # runtime fallback for typing
+
+# Dynamically import llama-cpp-python at runtime so missing installation doesn't
+# cause static import failures for users who don't need the package.
+_llama_import_error = None
+_llama_class = None
+try:
+    llama_mod = importlib.import_module("llama_cpp")
+    _llama_class = getattr(llama_mod, "Llama", None)
+except Exception:
+    _llama_class = None
+    _llama_import_error = ImportError(
+        "llama-cpp-python is not installed. "
+        "Please install it with hardware acceleration support *before* installing inferno. "
+        "See the 'Hardware Acceleration (llama-cpp-python)' section in README.md for instructions. "
+        "Example: CMAKE_ARGS='-DGGML_CUDA=on' pip install llama-cpp-python"
+    )
 
 console = Console()
 
@@ -167,6 +178,8 @@ class LLMInterface:
             # Try to extract RoPE parameters from the model file if not provided
             if local_rope_freq_base is None or local_rope_freq_scale is None:
                 try:
+                    if self.model_path is None:
+                        raise ValueError("No model path available to extract RoPE parameters")
                     info = simple_gguf_info(self.model_path)
                     metadata = info.get("metadata", {}) # Use metadata for more reliable keys
 
@@ -260,7 +273,9 @@ class LLMInterface:
             if type_v is not None:
                 params["type_v"] = type_v
 
-            self.llm = Llama(**params)
+            if _llama_class is None:
+                raise (_llama_import_error if _llama_import_error is not None else ImportError("llama-cpp-python is not installed"))
+            self.llm = _llama_class(**params)
 
             console.print(f"[bold green]Model {self.model_name} loaded successfully[/bold green]")
             if verbose:
@@ -291,6 +306,13 @@ class LLMInterface:
         presence_penalty: float = 0.0,
         grammar: Optional[Any] = None,
         logit_bias: Optional[Dict[int, float]] = None,
+        # Extra compatibility options from the API layer
+        images: Optional[List[str]] = None,
+        system: Optional[str] = None,
+        template: Optional[str] = None,
+        context: Optional[List[int]] = None,
+        raw: bool = False,
+        format: Optional[Union[str, Dict[str, Any]]] = None,
     ) -> Union[Dict[str, Any], Generator[Dict[str, Any], None, None]]:
         """
         Create a completion for the given prompt.
@@ -311,6 +333,12 @@ class LLMInterface:
             presence_penalty (float): Penalty for token presence.
             grammar (Optional[Any]): Grammar for constrained generation.
             logit_bias (Optional[Dict[int, float]]): Token bias for generation.
+            images (Optional[List[str]]): Optional images for multimodal completions.
+            system (Optional[str]): Optional system prompt to provide additional context.
+            template (Optional[str]): Optional template to render the prompt.
+            context (Optional[List[int]]): Optional context tokens or ids.
+            raw (bool): Whether to return raw model output.
+            format (Optional[Union[str, Dict[str, Any]]]): Optional response format specification.
         Returns:
             Union[Dict[str, Any], Generator[Dict[str, Any], None, None]]: Completion result or generator for streaming.
         """
@@ -319,7 +347,8 @@ class LLMInterface:
             
         if self.llm is None:
             self.load_model()
-            
+        assert self.llm is not None, "LLM instance should be initialized after load_model()"
+
         # Prepare parameters
         params = {
             "prompt": prompt,
@@ -347,6 +376,19 @@ class LLMInterface:
             params["grammar"] = grammar
         if logit_bias is not None:
             params["logit_bias"] = logit_bias
+        if images is not None:
+            params["images"] = images
+        if system is not None:
+            params["system"] = system
+        if template is not None:
+            params["template"] = template
+        if context is not None:
+            params["context"] = context
+        if raw:
+            params["raw"] = raw
+        if format is not None:
+            # Keep compatibility with chat completion's response_format handling
+            params["format"] = format if isinstance(format, dict) else {"type": format}
             
         return self.llm.create_completion(**params)
 
@@ -361,7 +403,7 @@ class LLMInterface:
         stream: bool = False,
         stop: Optional[List[str]] = None,
         seed: Optional[int] = None,
-        tools: Optional[List[Dict[str, Any]]] = None,
+        tools: Optional[List[Any]] = None,
         tool_choice: Optional[Union[str, Dict[str, Any]]] = None,
         format: Optional[Union[str, Dict[str, Any]]] = None,
         frequency_penalty: float = 0.0,
@@ -398,7 +440,8 @@ class LLMInterface:
             
         if self.llm is None:
             self.load_model()
-            
+        assert self.llm is not None, "LLM instance should be initialized after load_model()"
+
         # Use messages directly without processing
         params = {
             "messages": messages,
@@ -415,7 +458,20 @@ class LLMInterface:
         if seed is not None:
             params["seed"] = seed
         if tools:
-            params["tools"] = tools
+            # Normalize tools (accept pydantic models from API layer or plain dicts)
+            normalized_tools: List[Dict[str, Any]] = []
+            for t in tools:
+                if hasattr(t, "model_dump"):
+                    normalized_tools.append(t.model_dump())
+                elif isinstance(t, dict):
+                    normalized_tools.append(t)
+                else:
+                    try:
+                        normalized_tools.append(dict(t))
+                    except Exception:
+                        # Fallback to passing the object as-is
+                        normalized_tools.append(t)
+            params["tools"] = normalized_tools
         if tool_choice:
             params["tool_choice"] = tool_choice
         if format:
@@ -449,6 +505,7 @@ class LLMInterface:
         """
         if self.llm is None:
             self.load_model()
+        assert self.llm is not None, "LLM instance should be initialized after load_model()"
 
         # Convert input to list if it's a string
         if isinstance(input, str):

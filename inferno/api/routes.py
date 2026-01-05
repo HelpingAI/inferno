@@ -5,19 +5,18 @@ API endpoints for Inferno
 import time
 import json
 import logging
-from typing import Dict, List, Optional, Union, Any
+import os
+from typing import Dict, List, Optional, Union, Any, cast, AsyncGenerator
 from datetime import datetime
-import base64
-from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, BackgroundTasks, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from ..core.model_manager import ModelManager
-from ..utils.config import config
 
 logger = logging.getLogger(__name__)
+
 
 # API Models
 class GenerateRequest(BaseModel):
@@ -34,21 +33,24 @@ class GenerateRequest(BaseModel):
     options: Optional[Dict[str, Any]] = None
     keep_alive: Optional[str] = "5m"
 
+
 class ChatMessage(BaseModel):
     role: str
     content: Union[str, List[Dict[str, Any]]]
     images: Optional[List[str]] = None
     tool_calls: Optional[List[Dict[str, Any]]] = None
 
+
 class ChatRequest(BaseModel):
     model: str
     messages: List[ChatMessage]
     stream: bool = True
     tools: Optional[List[Dict[str, Any]]] = None
-    tool_choice: Optional[Union[str, Dict[str, Any]]] = None # Added tool_choice
+    tool_choice: Optional[Union[str, Dict[str, Any]]] = None  # Added tool_choice
     format: Optional[Union[str, Dict[str, Any]]] = None
     options: Optional[Dict[str, Any]] = None
     keep_alive: Optional[str] = "5m"
+
 
 class EmbeddingRequest(BaseModel):
     model: str
@@ -57,13 +59,16 @@ class EmbeddingRequest(BaseModel):
     options: Optional[Dict[str, Any]] = None
     keep_alive: Optional[str] = "5m"
 
+
 class PullModelRequest(BaseModel):
     model: str
     insecure: bool = False
     stream: bool = True
 
+
 class DeleteModelRequest(BaseModel):
     model: str
+
 
 class ModelResponse(BaseModel):
     name: str
@@ -71,15 +76,19 @@ class ModelResponse(BaseModel):
     size: int
     details: Optional[Dict[str, Any]] = None
 
+
 class ModelsResponse(BaseModel):
     models: List[ModelResponse]
+
 
 # API Router
 router = APIRouter()
 
+
 # Dependency to get model manager
-def get_model_manager():
+def get_model_manager() -> ModelManager:
     return ModelManager()
+
 
 @router.post("/api/generate", response_model=None)
 async def generate(
@@ -113,7 +122,9 @@ async def generate(
         if not request.prompt:
             model = model_manager.get_model_path(request.model)
             if not model:
-                raise HTTPException(status_code=404, detail=f"Model {request.model} not found")
+                raise HTTPException(
+                    status_code=404, detail=f"Model {request.model} not found"
+                )
 
             # Schedule unloading if keep_alive is 0
             if keep_alive_seconds == 0:
@@ -124,16 +135,19 @@ async def generate(
                 "created_at": datetime.now().isoformat(),
                 "response": "",
                 "done": True,
-                "done_reason": "load" if keep_alive_seconds > 0 else "unload"
+                "done_reason": "load" if keep_alive_seconds > 0 else "unload",
             }
 
         # Load the model
         model_path = model_manager.get_model_path(request.model)
         if not model_path:
-            raise HTTPException(status_code=404, detail=f"Model {request.model} not found")
+            raise HTTPException(
+                status_code=404, detail=f"Model {request.model} not found"
+            )
 
         # Create LLM interface
         from ..core.llm import LLMInterface
+
         model = LLMInterface(request.model)
         model.load_model(**(request.options or {}))
 
@@ -145,15 +159,22 @@ async def generate(
             if image_base64.startswith("data:"):
                 # Handle data URI
                 image_base64 = image_base64.split(",", 1)[1]
-            image_data = base64.b64decode(image_base64)
+            # Keep base64-encoded string to pass along to the model (expected type is list[str])
+            image_data = image_base64
 
         # Prepare generation parameters
         generation_params = {
             "prompt": request.prompt,
             "suffix": request.suffix,
-            "max_tokens": request.options.get("num_predict", 128) if request.options else 128,
-            "temperature": request.options.get("temperature", 0.8) if request.options else 0.8,
-            "top_p": request.options.get("top_p", 0.95) if request.options else 0.95,
+            "max_tokens": cast(int, request.options.get("num_predict", 128))
+            if request.options
+            else 128,
+            "temperature": cast(float, request.options.get("temperature", 0.8))
+            if request.options
+            else 0.8,
+            "top_p": cast(float, request.options.get("top_p", 0.95))
+            if request.options
+            else 0.95,
             "echo": False,
         }
 
@@ -175,42 +196,80 @@ async def generate(
 
         # Stream the response
         if request.stream:
-            async def generate_stream():
+
+            async def generate_stream() -> AsyncGenerator[str, None]:
                 start_time = time.time()
                 load_time = 0  # We don't track this separately
 
-                # Start generation
-                completion_id = str(uuid4())
-
                 # Initial response
-                yield json.dumps({
-                    "model": request.model,
-                    "created_at": datetime.now().isoformat(),
-                    "response": "",
-                    "done": False
-                }) + "\n"
+                yield (
+                    json.dumps(
+                        {
+                            "model": request.model,
+                            "created_at": datetime.now().isoformat(),
+                            "response": "",
+                            "done": False,
+                        }
+                    )
+                    + "\n"
+                )
 
                 # Generate completion - make sure we're not using streaming mode here
-                generation_params["stream"] = False  # Ensure we get a dictionary, not a generator
-                completion = model.create_completion(**generation_params)
+                generation_params["stream"] = (
+                    False  # Ensure we get a dictionary, not a generator
+                )
+                completion = cast(
+                    Dict[str, Any],
+                    model.create_completion(
+                        prompt=request.prompt,
+                        max_tokens=cast(int, request.options.get("num_predict", 128))
+                        if request.options
+                        else 128,
+                        temperature=cast(float, request.options.get("temperature", 0.8))
+                        if request.options
+                        else 0.8,
+                        top_p=cast(float, request.options.get("top_p", 0.95))
+                        if request.options
+                        else 0.95,
+                        stream=False,
+                        suffix=request.suffix,
+                        images=[image_data] if image_data else None,
+                        context=request.context,
+                        system=request.system,
+                        template=request.template,
+                        format=request.format,
+                        echo=False,
+                    ),
+                )
 
                 # Final response with stats
                 end_time = time.time()
-                total_duration = int((end_time - start_time) * 1e9)  # Convert to nanoseconds
+                total_duration = int(
+                    (end_time - start_time) * 1e9
+                )  # Convert to nanoseconds
 
-                yield json.dumps({
-                    "model": request.model,
-                    "created_at": datetime.now().isoformat(),
-                    "response": completion["choices"][0]["text"],
-                    "done": True,
-                    "context": completion.get("context", []),
-                    "total_duration": total_duration,
-                    "load_duration": load_time,
-                    "prompt_eval_count": completion.get("usage", {}).get("prompt_tokens", 0),
-                    "prompt_eval_duration": 0,  # Not tracked
-                    "eval_count": completion.get("usage", {}).get("completion_tokens", 0),
-                    "eval_duration": 0  # Not tracked
-                }) + "\n"
+                yield (
+                    json.dumps(
+                        {
+                            "model": request.model,
+                            "created_at": datetime.now().isoformat(),
+                            "response": completion["choices"][0]["text"],
+                            "done": True,
+                            "context": completion.get("context", []),
+                            "total_duration": total_duration,
+                            "load_duration": load_time,
+                            "prompt_eval_count": completion.get("usage", {}).get(
+                                "prompt_tokens", 0
+                            ),
+                            "prompt_eval_duration": 0,  # Not tracked
+                            "eval_count": completion.get("usage", {}).get(
+                                "completion_tokens", 0
+                            ),
+                            "eval_duration": 0,  # Not tracked
+                        }
+                    )
+                    + "\n"
+                )
 
                 # Schedule unloading if keep_alive is 0
                 if keep_alive_seconds == 0:
@@ -222,11 +281,35 @@ async def generate(
             start_time = time.time()
 
             # Generate completion
-            completion = model.create_completion(**generation_params)
+            completion = cast(
+                Dict[str, Any],
+                model.create_completion(
+                    prompt=request.prompt,
+                    max_tokens=cast(int, request.options.get("num_predict", 128))
+                    if request.options
+                    else 128,
+                    temperature=cast(float, request.options.get("temperature", 0.8))
+                    if request.options
+                    else 0.8,
+                    top_p=cast(float, request.options.get("top_p", 0.95))
+                    if request.options
+                    else 0.95,
+                    stream=False,
+                    suffix=request.suffix,
+                    images=[image_data] if image_data else None,
+                    context=request.context,
+                    system=request.system,
+                    template=request.template,
+                    format=request.format,
+                    echo=False,
+                ),
+            )
 
             # Calculate durations
             end_time = time.time()
-            total_duration = int((end_time - start_time) * 1e9)  # Convert to nanoseconds
+            total_duration = int(
+                (end_time - start_time) * 1e9
+            )  # Convert to nanoseconds
 
             # Schedule unloading if keep_alive is 0
             if keep_alive_seconds == 0:
@@ -240,15 +323,18 @@ async def generate(
                 "context": completion.get("context", []),
                 "total_duration": total_duration,
                 "load_duration": 0,  # Not tracked separately
-                "prompt_eval_count": completion.get("usage", {}).get("prompt_tokens", 0),
+                "prompt_eval_count": completion.get("usage", {}).get(
+                    "prompt_tokens", 0
+                ),
                 "prompt_eval_duration": 0,  # Not tracked
                 "eval_count": completion.get("usage", {}).get("completion_tokens", 0),
-                "eval_duration": 0  # Not tracked
+                "eval_duration": 0,  # Not tracked
             }
 
     except Exception as e:
         logger.error(f"Error in generate: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @router.post("/api/chat", response_model=None)
 async def chat(
@@ -282,26 +368,28 @@ async def chat(
         if not request.messages:
             model_path = model_manager.get_model_path(request.model)
             if not model_path:
-                raise HTTPException(status_code=404, detail=f"Model {request.model} not found")
+                raise HTTPException(
+                    status_code=404, detail=f"Model {request.model} not found"
+                )
 
             return {
                 "model": request.model,
                 "created_at": datetime.now().isoformat(),
-                "message": {
-                    "role": "assistant",
-                    "content": ""
-                },
+                "message": {"role": "assistant", "content": ""},
                 "done_reason": "load" if keep_alive_seconds > 0 else "unload",
-                "done": True
+                "done": True,
             }
 
         # Load the model
         model_path = model_manager.get_model_path(request.model)
         if not model_path:
-            raise HTTPException(status_code=404, detail=f"Model {request.model} not found")
+            raise HTTPException(
+                status_code=404, detail=f"Model {request.model} not found"
+            )
 
         # Create LLM interface
         from ..core.llm import LLMInterface
+
         model = LLMInterface(request.model)
         model.load_model(**(request.options or {}))
 
@@ -309,23 +397,23 @@ async def chat(
         messages = []
         for msg in request.messages:
             if isinstance(msg.content, str):
-                messages.append({
-                    "role": msg.role,
-                    "content": msg.content
-                })
+                messages.append({"role": msg.role, "content": msg.content})
             else:
                 # Handle multimodal content
-                messages.append({
-                    "role": msg.role,
-                    "content": msg.content
-                })
+                messages.append({"role": msg.role, "content": msg.content})
 
         # Prepare chat parameters
         chat_params = {
             "messages": messages,
-            "temperature": request.options.get("temperature", 0.8) if request.options else 0.8,
-            "top_p": request.options.get("top_p", 0.95) if request.options else 0.95,
-            "max_tokens": request.options.get("num_predict", 128) if request.options else 128,
+            "temperature": cast(float, request.options.get("temperature", 0.8))
+            if request.options
+            else 0.8,
+            "top_p": cast(float, request.options.get("top_p", 0.95))
+            if request.options
+            else 0.95,
+            "max_tokens": cast(int, request.options.get("num_predict", 128))
+            if request.options
+            else 128,
         }
 
         # Add tools if provided
@@ -342,46 +430,77 @@ async def chat(
 
         # Stream the response
         if request.stream:
-            async def generate_stream():
+
+            async def generate_stream() -> AsyncGenerator[str, None]:
                 start_time = time.time()
 
-                # Start generation
-                completion_id = str(uuid4())
-
                 # Initial response
-                yield json.dumps({
-                    "model": request.model,
-                    "created_at": datetime.now().isoformat(),
-                    "message": {
-                        "role": "assistant",
-                        "content": ""
-                    },
-                    "done": False
-                }) + "\n"
+                yield (
+                    json.dumps(
+                        {
+                            "model": request.model,
+                            "created_at": datetime.now().isoformat(),
+                            "message": {"role": "assistant", "content": ""},
+                            "done": False,
+                        }
+                    )
+                    + "\n"
+                )
 
                 # Generate chat completion - make sure we're not using streaming mode here
-                chat_params["stream"] = False # Ensure we get a dictionary, not a generator
-                completion = model.create_chat_completion(**chat_params)
+                chat_params["stream"] = (
+                    False  # Ensure we get a dictionary, not a generator
+                )
+                completion = cast(
+                    Dict[str, Any],
+                    model.create_chat_completion(
+                        messages=messages,
+                        max_tokens=cast(int, request.options.get("num_predict", 128))
+                        if request.options
+                        else 128,
+                        temperature=cast(float, request.options.get("temperature", 0.8))
+                        if request.options
+                        else 0.8,
+                        top_p=cast(float, request.options.get("top_p", 0.95))
+                        if request.options
+                        else 0.95,
+                        stream=False,
+                        tools=request.tools,
+                        tool_choice=request.tool_choice,
+                        format=request.format,
+                    ),
+                )
 
                 # Final response with stats
                 end_time = time.time()
-                total_duration = int((end_time - start_time) * 1e9)  # Convert to nanoseconds
+                total_duration = int(
+                    (end_time - start_time) * 1e9
+                )  # Convert to nanoseconds
 
                 response_message = completion["choices"][0]["message"]
 
-                yield json.dumps({
-                    "model": request.model,
-                    "created_at": datetime.now().isoformat(),
-                    "message": response_message,
-                    "done": True,
-                    "done_reason": "stop",
-                    "total_duration": total_duration,
-                    "load_duration": 0,  # Not tracked separately
-                    "prompt_eval_count": completion.get("usage", {}).get("prompt_tokens", 0),
-                    "prompt_eval_duration": 0,  # Not tracked
-                    "eval_count": completion.get("usage", {}).get("completion_tokens", 0),
-                    "eval_duration": 0  # Not tracked
-                }) + "\n"
+                yield (
+                    json.dumps(
+                        {
+                            "model": request.model,
+                            "created_at": datetime.now().isoformat(),
+                            "message": response_message,
+                            "done": True,
+                            "done_reason": "stop",
+                            "total_duration": total_duration,
+                            "load_duration": 0,  # Not tracked separately
+                            "prompt_eval_count": completion.get("usage", {}).get(
+                                "prompt_tokens", 0
+                            ),
+                            "prompt_eval_duration": 0,  # Not tracked
+                            "eval_count": completion.get("usage", {}).get(
+                                "completion_tokens", 0
+                            ),
+                            "eval_duration": 0,  # Not tracked
+                        }
+                    )
+                    + "\n"
+                )
 
                 # Schedule unloading if keep_alive is 0
                 if keep_alive_seconds == 0:
@@ -393,11 +512,31 @@ async def chat(
             start_time = time.time()
 
             # Generate chat completion
-            completion = model.create_chat_completion(**chat_params)
+            completion = cast(
+                Dict[str, Any],
+                model.create_chat_completion(
+                    messages=messages,
+                    max_tokens=cast(int, request.options.get("num_predict", 128))
+                    if request.options
+                    else 128,
+                    temperature=cast(float, request.options.get("temperature", 0.8))
+                    if request.options
+                    else 0.8,
+                    top_p=cast(float, request.options.get("top_p", 0.95))
+                    if request.options
+                    else 0.95,
+                    stream=False,
+                    tools=request.tools,
+                    tool_choice=request.tool_choice,
+                    format=request.format,
+                ),
+            )
 
             # Calculate durations
             end_time = time.time()
-            total_duration = int((end_time - start_time) * 1e9)  # Convert to nanoseconds
+            total_duration = int(
+                (end_time - start_time) * 1e9
+            )  # Convert to nanoseconds
 
             response_message = completion["choices"][0]["message"]
 
@@ -413,15 +552,18 @@ async def chat(
                 "done_reason": "stop",
                 "total_duration": total_duration,
                 "load_duration": 0,  # Not tracked separately
-                "prompt_eval_count": completion.get("usage", {}).get("prompt_tokens", 0),
+                "prompt_eval_count": completion.get("usage", {}).get(
+                    "prompt_tokens", 0
+                ),
                 "prompt_eval_duration": 0,  # Not tracked
                 "eval_count": completion.get("usage", {}).get("completion_tokens", 0),
-                "eval_duration": 0  # Not tracked
+                "eval_duration": 0,  # Not tracked
             }
 
     except Exception as e:
         logger.error(f"Error in chat: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @router.post("/api/embed", response_model=None)
 async def embed(
@@ -454,10 +596,13 @@ async def embed(
         # Load the model
         model_path = model_manager.get_model_path(request.model)
         if not model_path:
-            raise HTTPException(status_code=404, detail=f"Model {request.model} not found")
+            raise HTTPException(
+                status_code=404, detail=f"Model {request.model} not found"
+            )
 
         # Create LLM interface
         from ..core.llm import LLMInterface
+
         model = LLMInterface(request.model)
         model.load_model(**(request.options or {}))
 
@@ -465,13 +610,12 @@ async def embed(
         start_time = time.time()
 
         embeddings = model.create_embeddings(
-            input=request.input,
-            truncate=request.truncate
+            input=request.input, truncate=request.truncate
         )
 
         # Calculate durations
         end_time = time.time()
-        total_duration = int((end_time - start_time) * 1e9)  # Convert to nanoseconds
+        _total_duration = int((end_time - start_time) * 1e9)  # Convert to nanoseconds
 
         # Schedule unloading if keep_alive is 0
         if keep_alive_seconds == 0:
@@ -483,6 +627,7 @@ async def embed(
         logger.error(f"Error in embed: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @router.post("/api/pull", response_model=None)
 async def pull_model(
     request: PullModelRequest,
@@ -491,7 +636,8 @@ async def pull_model(
     """Pull a model from Hugging Face Hub"""
     try:
         if request.stream:
-            async def generate_stream():
+
+            async def generate_stream() -> AsyncGenerator[str, None]:
                 # Initial response
                 yield json.dumps({"status": "pulling manifest"}) + "\n"
 
@@ -500,17 +646,19 @@ async def pull_model(
                     model_name, model_path = model_manager.download_model(request.model)
 
                     # Success response
-                    yield json.dumps({
-                        "status": "success",
-                        "model": model_name,
-                        "path": str(model_path)
-                    }) + "\n"
+                    yield (
+                        json.dumps(
+                            {
+                                "status": "success",
+                                "model": model_name,
+                                "path": str(model_path),
+                            }
+                        )
+                        + "\n"
+                    )
                 except Exception as e:
                     # Error response
-                    yield json.dumps({
-                        "status": "error",
-                        "error": str(e)
-                    }) + "\n"
+                    yield json.dumps({"status": "error", "error": str(e)}) + "\n"
 
             return StreamingResponse(generate_stream(), media_type="application/json")
         else:
@@ -521,17 +669,15 @@ async def pull_model(
                 return {
                     "status": "success",
                     "model": model_name,
-                    "path": str(model_path)
+                    "path": str(model_path),
                 }
             except Exception as e:
-                return {
-                    "status": "error",
-                    "error": str(e)
-                }
+                return {"status": "error", "error": str(e)}
 
     except Exception as e:
         logger.error(f"Error in pull_model: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @router.post("/api/delete", response_model=None)
 async def delete_model(
@@ -551,6 +697,7 @@ async def delete_model(
         logger.error(f"Error in delete_model: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @router.get("/api/models", response_model=ModelsResponse)
 async def list_models(
     model_manager: ModelManager = Depends(get_model_manager),
@@ -561,23 +708,24 @@ async def list_models(
 
         model_responses = []
         for model in models:
-            model_responses.append(ModelResponse(
-                name=model["name"],
-                modified_at=model.get("downloaded_at", datetime.now().isoformat()),
-                size=os.path.getsize(model["path"]) if "path" in model and os.path.exists(model["path"]) else 0,
-                details={
-                    "format": "gguf",
-                    "family": "llama",
-                    "parameter_size": model.get("parameter_size", None),
-                    "quantization_level": model.get("quantization_level", None)
-                }
-            ))
+            model_responses.append(
+                ModelResponse(
+                    name=model["name"],
+                    modified_at=model.get("downloaded_at", datetime.now().isoformat()),
+                    size=os.path.getsize(model["path"])
+                    if "path" in model and os.path.exists(model["path"])
+                    else 0,
+                    details={
+                        "format": "gguf",
+                        "family": "llama",
+                        "parameter_size": model.get("parameter_size", None),
+                        "quantization_level": model.get("quantization_level", None),
+                    },
+                )
+            )
 
         return ModelsResponse(models=model_responses)
 
     except Exception as e:
         logger.error(f"Error in list_models: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
-
-# Import os for file size
-import os

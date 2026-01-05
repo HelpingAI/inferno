@@ -4,21 +4,16 @@ Main client implementation for the Inferno API.
 
 import json
 import requests
-from typing import Dict, Any, List, Optional, Union, Generator, Iterator, Callable
+from typing import Dict, Any, List, Optional, Union, Iterator, overload, Literal, cast
 import time
 from dataclasses import asdict, is_dataclass
 
 from .config import InfernoConfig
 from .exceptions import InfernoAPIError, InfernoConnectionError, InfernoTimeoutError
-from .models import Message, Tool, ToolChoice # Import necessary models
+from .models import Tool, ToolChoice # Import necessary models
 from .utils import (
     MessagesInput, # Import the type alias
-    generate_request_id,
-    current_timestamp,
-    parse_stream_response,
-    handle_error_response,
-    prepare_stop_sequences,
-    calculate_usage
+    prepare_stop_sequences
 )
 
 
@@ -68,6 +63,30 @@ class InfernoClient:
         self.embeddings = Embedding(self)
         self.models = Model(self)
     
+    @overload
+    def request(
+        self,
+        method: str,
+        path: str,
+        params: Optional[Dict[str, Any]] = None,
+        json_data: Optional[Dict[str, Any]] = None,
+        headers: Optional[Dict[str, str]] = None,
+        stream: Literal[True] = True,
+        timeout: Optional[float] = None,
+    ) -> Iterator[Dict[str, Any]]: ...
+
+    @overload
+    def request(
+        self,
+        method: str,
+        path: str,
+        params: Optional[Dict[str, Any]] = None,
+        json_data: Optional[Dict[str, Any]] = None,
+        headers: Optional[Dict[str, str]] = None,
+        stream: Literal[False] = False,
+        timeout: Optional[float] = None,
+    ) -> Dict[str, Any]: ...
+
     def request(
         self,
         method: str,
@@ -452,11 +471,11 @@ class Embedding:
             json_data["user"] = user
         
         # Make the request
-        return self.client.request(
+        return cast(Dict[str, Any], self.client.request(
             method="POST",
             path="/embeddings",
             json_data=json_data,
-        )
+        ))
 
 
 class Model:
@@ -480,10 +499,10 @@ class Model:
         Returns:
             Dict[str, Any]: List of models
         """
-        return self.client.request(
+        return cast(Dict[str, Any], self.client.request(
             method="GET",
             path="/models",
-        )
+        ))
     
     def retrieve(self, model: str) -> Dict[str, Any]:
         """
@@ -495,9 +514,9 @@ class Model:
         Returns:
             Dict[str, Any]: Model details
         """
-        return self.client.request(
+        return cast(Dict[str, Any], self.client.request(
             method="GET",
             path=f"/models/{model}",
-        )
+        ))
 
 

@@ -20,7 +20,7 @@ except ImportError:
 # Default context lengths (can be overridden by function arguments)
 DEFAULT_CONTEXT_LENGTHS = [2048, 4096, 8192, 16384, 32768, 65536, 131072]
 
-def estimate_gguf_ram_requirements(model_path: str, verbose: bool = False, context_lengths: Optional[List[int]] = None) -> Dict[str, float]:
+def estimate_gguf_ram_requirements(model_path: str, verbose: bool = False, context_lengths: Optional[List[int]] = None) -> Dict[str, Any]:
     """
     Estimate RAM requirements to run a GGUF model.
 
@@ -88,17 +88,24 @@ def estimate_gguf_ram_requirements(model_path: str, verbose: bool = False, conte
     context_length = None
     try:
         info = simple_gguf_info(model_path)
-        metadata = info.get("metadata", {})
-        # Use regex to find any key ending with .context_length
-        context_length_keys = [k for k in metadata.keys() if re.search(r'\\.context_length$', k)]
-        if context_length_keys:
-            # Use the first valid integer value found
-            for key in sorted(context_length_keys):
-                try:
-                    context_length = int(metadata[key])
-                    break
-                except (ValueError, TypeError):
-                    continue
+        # Guard against simple_gguf_info returning None or unexpected types
+        if not isinstance(info, dict):
+            metadata = {}
+        else:
+            metadata = info.get("metadata") or {}
+
+        # Ensure metadata is a dict before attempting to iterate it
+        if isinstance(metadata, dict):
+            # Use regex to find any key ending with .context_length
+            context_length_keys = [k for k in metadata.keys() if re.search(r'\.context_length$', k)]
+            if context_length_keys:
+                # Use the first valid integer value found
+                for key in sorted(context_length_keys):
+                    try:
+                        context_length = int(metadata[key])
+                        break
+                    except (ValueError, TypeError):
+                        continue
     except Exception:
         context_length = None
 
@@ -374,6 +381,10 @@ def estimate_from_huggingface_repo(repo_id: str, branch: str = "main", context_l
             chosen_quant = list(quant_groups.keys())[0]
             chosen_file = quant_groups[chosen_quant][0]
 
+        # Ensure we actually have a chosen file
+        if chosen_file is None:
+            return {}
+
         filename, size_gb, size_bytes = chosen_file
 
         # Create RAM estimation using the file size
@@ -466,12 +477,12 @@ def estimate_from_huggingface_repo(repo_id: str, branch: str = "main", context_l
     except Exception:
         return {}
 
-def print_gpu_compatibility(ram_requirements: Dict[str, float], vram_info: Dict, context_lengths: Optional[List[int]] = None):
+def print_gpu_compatibility(ram_requirements: Dict[str, Any], vram_info: Dict, context_lengths: Optional[List[int]] = None):
     """
     Print GPU compatibility information based on RAM requirements.
 
     Args:
-        ram_requirements: Dictionary with RAM requirements
+        ram_requirements: Dictionary with RAM requirements (values may include nested dicts)
         vram_info: Dictionary with GPU VRAM information
     """
     if not vram_info:
@@ -483,12 +494,19 @@ def print_gpu_compatibility(ram_requirements: Dict[str, float], vram_info: Dict,
     # Context lengths to analyze
     if context_lengths is None:
         context_lengths = DEFAULT_CONTEXT_LENGTHS[:4]  # Default to first 4 for display
+    else:
+        # Coerce values to ints where possible
+        try:
+            context_lengths = [int(x) for x in context_lengths]
+        except Exception:
+            context_lengths = DEFAULT_CONTEXT_LENGTHS[:4]
 
     # Quantization levels to check (arranged from most efficient to highest quality)
     quant_levels = ["Q2_K", "Q3_K_M", "Q4_K_M", "Q5_K_M", "Q6_K", "Q8_0", "F16"]
 
-    # Get context RAM overhead
-    context_ram = ram_requirements.get("context_overhead", {})
+    # Get context RAM overhead and validate it's a dict
+    context_ram_obj = ram_requirements.get("context_overhead", {})
+    context_ram = context_ram_obj if isinstance(context_ram_obj, dict) else {}
 
     # For each GPU
     for gpu_idx, gpu_data in vram_info.items():
@@ -504,7 +522,7 @@ def print_gpu_compatibility(ram_requirements: Dict[str, float], vram_info: Dict,
         # Print header row with context lengths
         header = "Quantization | "
         for ctx_len in context_lengths:
-            header += f"{ctx_len:6d} | "
+            header += f"{int(ctx_len):6d} | "
         print(header)
         print("-" * len(header))
 
@@ -513,14 +531,24 @@ def print_gpu_compatibility(ram_requirements: Dict[str, float], vram_info: Dict,
             if quant not in ram_requirements:
                 continue
 
-            base_ram = ram_requirements[quant]
+            # Ensure base_ram is numeric
+            try:
+                base_ram = float(ram_requirements[quant])
+            except Exception:
+                # Skip non-numeric entries
+                continue
+
             row = f"{quant:11s} | "
 
             for ctx_len in context_lengths:
-                ctx_key = f"Context {ctx_len}"
+                ctx_key = f"Context {int(ctx_len)}"
                 if ctx_key in context_ram:
                     ctx_overhead = context_ram[ctx_key]
-                    total_ram = base_ram + ctx_overhead
+                    try:
+                        total_ram = base_ram + float(ctx_overhead)
+                    except Exception:
+                        # If ctx_overhead is not numeric, treat as zero
+                        total_ram = base_ram
 
                     # Check if it fits in VRAM
                     fits = total_ram <= vram_free
@@ -624,19 +652,20 @@ def extract_max_context_from_gguf(model_path: str, debug: bool = False) -> Optio
                 print(f"Found keys ending with '.context_length': {context_length_keys}")
 
             # Sort keys alphabetically for consistent selection
-            context_length_keys.sort()
+            if isinstance(context_length_keys, list):
+                context_length_keys.sort()
 
-            # Try to extract and validate the context length from the found keys
-            for key in context_length_keys:
-                try:
-                    value = int(metadata[key])
-                    if debug:
-                        print(f"Found valid context length in metadata key '{key}': {value}")
-                    return value
-                except (ValueError, TypeError, OverflowError):
-                    if debug:
-                        print(f"Value for key '{key}' ('{metadata[key]}') is not a valid integer.")
-                    continue # Try the next key
+                # Try to extract and validate the context length from the found keys
+                for key in context_length_keys:
+                    try:
+                        value = int(metadata[key])
+                        if debug:
+                            print(f"Found valid context length in metadata key '{key}': {value}")
+                        return value
+                    except (ValueError, TypeError, OverflowError):
+                        if debug:
+                            print(f"Value for key '{key}' ('{metadata[key]}') is not a valid integer.")
+                        continue # Try the next key
 
         # If no valid context length found in metadata
         if debug:

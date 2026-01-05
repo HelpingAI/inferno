@@ -4,7 +4,6 @@ API server with OpenAI compatibility
 
 import json
 import time
-import os
 import datetime
 from typing import Dict, Any, List, Optional, AsyncGenerator, Union
 
@@ -517,7 +516,7 @@ async def create_embeddings(request: EmbeddingRequest, background_tasks: Backgro
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error generating embeddings: {str(e)}")
 
-def start_server(host: str = None, port: int = None, model_options: Dict[str, Any] = None) -> None:
+def start_server(host: Optional[str] = None, port: Optional[int] = None, model_options: Optional[Dict[str, Any]] = None) -> None:
     """
     Start the API server.
     Args:
@@ -530,6 +529,6 @@ def start_server(host: str = None, port: int = None, model_options: Dict[str, An
     
     # Store model options in config for use by get_model
     if model_options:
-        config["model_options"] = model_options
+        config.set("model_options", model_options)
     
     uvicorn.run(app, host=host, port=port)

@@ -10,10 +10,9 @@ import signal
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple
 from rich.console import Console
 from rich.table import Table
-from rich.panel import Panel
 
 from ..utils.config import config
 from .gguf_reader import GGUFReader
@@ -293,7 +292,6 @@ class ModelQuantizer:
         # Check if input is a raw HF model
         if Path(input_model).is_dir():
             # Convert raw model to GGUF first
-            from huggingface_hub import snapshot_download
             import subprocess
             
             with console.status("[bold green]Converting raw model to GGUF..."):

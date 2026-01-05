@@ -75,7 +75,22 @@ class ModelManager:
         fs = HfFileSystem()
         try:
             files = fs.ls(repo_id, detail=False)
-            gguf_files = [os.path.basename(f) for f in files if f.endswith(".gguf")]
+            gguf_files: List[str] = []
+            for f in files:
+                # HfFileSystem.ls may return either strings or dicts depending on 'detail'.
+                if isinstance(f, str):
+                    fname = os.path.basename(f)
+                elif isinstance(f, dict):
+                    # Try common keys that may contain filename/path
+                    possible = f.get("name") or f.get("path") or f.get("filename")
+                    if isinstance(possible, str):
+                        fname = os.path.basename(possible)
+                    else:
+                        continue
+                else:
+                    continue
+                if fname.endswith(".gguf"):
+                    gguf_files.append(fname)
             return gguf_files
         except Exception as e:
             console.print(f"[bold red]Error listing files in repository {repo_id}: {str(e)}[/bold red]")
@@ -93,8 +108,7 @@ class ModelManager:
             estimate_from_huggingface_repo,
             detect_quantization_from_filename,
             get_ram_requirement_string,
-            get_system_ram,
-            extract_max_context_from_gguf
+            get_system_ram
         )
         from rich.table import Table
         from rich.panel import Panel
@@ -112,18 +126,31 @@ class ModelManager:
 
         try:
             repo_estimates = estimate_from_huggingface_repo(repo_id)
-            if repo_estimates and "all_files" in repo_estimates:
-                for filename, file_info in repo_estimates["all_files"].items():
-                    if filename in gguf_files:
-                        # Store file size
-                        file_sizes[filename] = file_info.get('size_bytes', 0) / (1024**3)  # Convert to GB
+            if isinstance(repo_estimates, dict):
+                all_files = repo_estimates.get("all_files")
+                if isinstance(all_files, dict):
+                    for filename, file_info in all_files.items():
+                        if filename in gguf_files:
+                            # Ensure file_info is a mapping
+                            if not isinstance(file_info, dict):
+                                continue
+                            # Store file size
+                            size_bytes = file_info.get('size_bytes', 0)
+                            try:
+                                file_sizes[filename] = float(size_bytes) / (1024**3)  # Convert to GB
+                            except Exception:
+                                file_sizes[filename] = 0.0
 
-                        # Detect quantization from filename
-                        quant_type = detect_quantization_from_filename(filename)
-                        if quant_type:
-                            quant_types[filename] = quant_type
-                            if quant_type in repo_estimates:
-                                ram_estimates[filename] = repo_estimates[quant_type]
+                            # Detect quantization from filename
+                            quant_type = detect_quantization_from_filename(filename)
+                            if quant_type:
+                                quant_types[filename] = quant_type
+                                quant_est = repo_estimates.get(quant_type)
+                                try:
+                                    if isinstance(quant_est, (int, float)):
+                                        ram_estimates[filename] = float(quant_est)
+                                except Exception:
+                                    pass
         except Exception as e:
             console.print(f"[dim]Error estimating RAM requirements: {str(e)}[/dim]")
 
@@ -181,10 +208,14 @@ class ModelManager:
 
                 # Try to get context length from repo metadata
                 context_info = "Auto (4096)"  # Default value
-                if "all_files" in repo_estimates and filename in repo_estimates["all_files"]:
-                    file_info = repo_estimates["all_files"][filename]
-                    if "max_context" in file_info and file_info["max_context"]:
-                        context_info = f"{file_info['max_context']}"
+                if isinstance(repo_estimates, dict):
+                    all_files = repo_estimates.get("all_files")
+                    if isinstance(all_files, dict) and filename in all_files:
+                        file_info = all_files[filename]
+                        if isinstance(file_info, dict):
+                            max_ctx = file_info.get("max_context")
+                            if max_ctx:
+                                context_info = f"{max_ctx}"
 
                 table.add_row(
                     f"[{file_index}]",
@@ -591,7 +622,6 @@ class ModelManager:
             local_dir = snapshot_download(
                 repo_id=repo_id,
                 local_dir=temp_dir,
-                local_dir_use_symlinks=False
             )
             return model_name, Path(local_dir)
             

@@ -12,7 +12,6 @@ from rich.panel import Panel
 from rich.text import Text
 from typing import Optional, List
 from pathlib import Path
-from typing import Optional
 import datetime
 from ..core.model_manager import ModelManager
 from ..core.quantizer import QuantizationMethod
@@ -64,12 +63,15 @@ def run_model(
     
     Example: hf:mradermacher/DAN-Qwen3-1.7B-GGUF:Q2_K
     """
+    # First, ensure the model string is treated as a str for type checkers
+    model_string = str(model_string)
+
     # First check if this is a filename that already exists
     model_path = model_manager.get_model_path(model_string)
     if model_path:
         # This is a filename that exists, find the model name
         for model_info in model_manager.list_models():
-            if model_info.get("filename") == model_string or model_info.get("path") == model_path:
+            if isinstance(model_info, dict) and (model_info.get("filename") == model_string or model_info.get("path") == model_path):
                 model_name = model_info.get("name")
                 break
         else:
@@ -98,6 +100,8 @@ def run_model(
                 return
 
     # Check RAM requirements
+    # Ensure model_name is a str for type checking
+    model_name = str(model_name)
     model_path = model_manager.get_model_path(model_name)
     ram_requirement = "Unknown"
     ram_reqs = None
@@ -106,11 +110,12 @@ def run_model(
     if model_path and os.path.exists(model_path):
         try:
             # Try to detect quantization from filename
-            filename = os.path.basename(model_path)
+            path_str = str(model_path)
+            filename = os.path.basename(path_str)
             quant_type = detect_quantization_from_filename(filename)
 
-            # Try to estimate RAM requirements from the model file
-            ram_reqs = estimate_gguf_ram_requirements(model_path, verbose=False)
+            # Try to estimate RAM requirements from the model file (pass string path)
+            ram_reqs = estimate_gguf_ram_requirements(path_str, verbose=False)
             if ram_reqs:
                 # Use detected quantization or fall back to Q4_K_M
                 quant_to_use = quant_type if quant_type and quant_type in ram_reqs else "Q4_K_M"
@@ -123,17 +128,13 @@ def run_model(
                     # Clarify RAM estimation context
                     console.print(f"[yellow]Estimated RAM requirement ({quant_to_use}, base): {ram_requirement}[/yellow]")
                     console.print(f"[yellow]Hardware suggestion: {hardware_suggestion}[/yellow]")
-                    # console.print(f"[yellow]Model quantization: [bold]{quant_type or 'Unknown'}[/bold][/yellow]")
-                    # # Clarify RAM estimation context
-                    # console.print(f"[yellow]Estimated RAM requirement ({quant_to_use}, base): {ram_requirement}[/yellow]")
-                    # console.print(f"[yellow]Hardware suggestion: {hardware_suggestion}[/yellow]")
         except Exception as e:
             console.print(f"[dim]Error estimating RAM requirements: {str(e)}[/dim]")
 
     # Fall back to size-based estimation if needed
     if ram_requirement == "Unknown":
         for size, ram in FALLBACK_RAM_REQUIREMENTS.items():
-            if size in model_name:
+            if isinstance(model_name, str) and size in model_name:
                 ram_requirement = ram
                 console.print(f"[yellow]This model requires approximately {ram_requirement} of RAM (estimated from model name)[/yellow]")
                 # console.print(f"[yellow]This model requires approximately {ram_requirement} of RAM (estimated from model name)[/yellow]")
@@ -148,7 +149,8 @@ def run_model(
             if quant_to_use in ram_reqs:
                 # Get RAM requirement with default context
                 base_ram = ram_reqs[quant_to_use]
-                ctx_ram = ram_reqs.get("context_overhead", {}).get("Context 4096", 0)
+                context_overhead = ram_reqs.get("context_overhead", {})
+                ctx_ram = context_overhead.get("Context 4096", 0) if isinstance(context_overhead, dict) else 0
                 total_ram = base_ram + ctx_ram
 
                 if total_ram > system_ram:
@@ -186,7 +188,8 @@ def run_model(
 
     # Load the model with provided options
     try:
-        llm = LLMInterface(model_name)
+        # Ensure we pass a concrete str to the LLM interface
+        llm = LLMInterface(str(model_name))
         # Use provided context length or default to 4096
         n_ctx_to_load = n_ctx or 4096
         llm.load_model(
@@ -210,8 +213,8 @@ def run_model(
         "use_mlock": use_mlock,
     }
 
-    # Start server with model options
-    start_server(host=host, port=port, model_options=model_options)
+    # Start server with model options. Provide sensible defaults if host/port are None to satisfy type checkers.
+    start_server(host=host or "127.0.0.1", port=port or 8080, model_options=model_options)
 
 @app.command("pull")
 def pull_model(
@@ -246,7 +249,8 @@ def pull_model(
         if model_path and os.path.exists(model_path):
             try:
                 from ..core.ram_estimator import extract_max_context_from_gguf
-                max_context = extract_max_context_from_gguf(model_path)
+                path_str = str(model_path)
+                max_context = extract_max_context_from_gguf(path_str)
                 if max_context:
                     console.print(f"[cyan]Detected maximum context length: {max_context:,}, but we will use 4096 by default[/cyan]")
                 else:
@@ -261,9 +265,10 @@ def pull_model(
             # console.print(f"[yellow]Analyzing downloaded model file: {os.path.basename(model_path)}[/yellow]")
             try:
                 # Use simple_gguf_info for more comprehensive details post-download
-                info = simple_gguf_info(model_path)
+                path_str = str(model_path)
+                info = simple_gguf_info(path_str)
                 metadata = info.get("metadata", {})
-                filename = os.path.basename(model_path)
+                filename = os.path.basename(path_str)
 
                 # Detect quantization from filename (fallback) or metadata
                 quant_type = info.get("quantization_type") or detect_quantization_from_filename(filename)
@@ -280,7 +285,7 @@ def pull_model(
                 # console.print("[yellow]Attempting to detect maximum context length...[/yellow]")
 
                 # Try to estimate RAM requirements using estimate_gguf_ram_requirements
-                ram_reqs = estimate_gguf_ram_requirements(model_path, verbose=False)
+                ram_reqs = estimate_gguf_ram_requirements(str(model_path), verbose=False)
                 if ram_reqs:
                     # Use detected quant_type if available and present in ram_reqs, else fallback
                     quant_to_use = quant_type if quant_type and quant_type in ram_reqs else "Q4_K_M"
@@ -385,11 +390,17 @@ def list_models_logic() -> None:
     table.add_column("Downloaded", style="dim")
 
     for model in models:
+        # Ensure model entry is a dict
+        if not isinstance(model, dict):
+            continue
+
         # Get file path and size
         file_path = model.get("path")
         file_size = "Unknown"
         size_bytes = 0
 
+        if file_path:
+            file_path = str(file_path)
         if file_path and os.path.exists(file_path):
             try:
                 size_bytes = os.path.getsize(file_path)
@@ -429,7 +440,7 @@ def list_models_logic() -> None:
                     max_context = f"{ctx_len:,}"
 
                 # Get RAM requirements
-                ram_reqs = estimate_gguf_ram_requirements(file_path, verbose=False)
+                ram_reqs = estimate_gguf_ram_requirements(str(file_path), verbose=False)
                 if ram_reqs:
                     # Use detected quantization or fall back to Q4_K_M
                     fallback_quant = "Q4_K_M"
@@ -544,14 +555,14 @@ def remove_model(
     Remove a downloaded model.
     """
     # First check if this is a model name
-    model_info = model_manager.get_model_info(model_string)
+    model_info = model_manager.get_model_info(str(model_string))
 
     # If not found by name, check if it's a filename
     if not model_info:
         for info in model_manager.list_models():
-            if info.get("filename") == model_string:
+            if isinstance(info, dict) and info.get("filename") == model_string:
                 model_info = info
-                model_string = info["name"]
+                model_string = info.get("name", model_string)
                 break
 
     if not model_info:
@@ -608,7 +619,7 @@ def debug_context(
     Debug context length detection for a model.
     """
     # First check if this is a model name
-    model_info = model_manager.get_model_info(model_name)
+    model_info = model_manager.get_model_info(str(model_name))
 
     # If not found by name, check if it's a filename
     if not model_info:
@@ -646,14 +657,14 @@ def show_model(
     Show detailed information about a model.
     """
     # First check if this is a model name
-    model_info = model_manager.get_model_info(model_name)
+    model_info = model_manager.get_model_info(str(model_name))
 
     # If not found by name, check if it's a filename
     if not model_info:
         for info in model_manager.list_models():
-            if info.get("filename") == model_name:
+            if isinstance(info, dict) and info.get("filename") == model_name:
                 model_info = info
-                model_name = info["name"]
+                model_name = info.get("name", model_name)
                 break
 
     if not model_info:
@@ -703,7 +714,7 @@ def show_model(
 
         # Check if there was an error in the reader
         if "error" in info or len(info.get("metadata", {})) < 5:  # If we have very few metadata entries
-            console.print(f"[yellow]Warning: GGUF reader encountered issues.[/yellow]")
+            console.print("[yellow]Warning: GGUF reader encountered issues.[/yellow]")
 
             # If there's a traceback, print it in debug mode
             if "traceback" in info and os.environ.get("INFERNO_DEBUG"):
@@ -747,7 +758,7 @@ def show_model(
         elif "context_length_error" in info:
             console.print(f"[yellow]Context Length Error:[/yellow] {info['context_length_error']}")
         elif "all_metadata_keys" in info:
-            console.print(f"[yellow]No context length found. Available metadata keys:[/yellow]")
+            console.print("[yellow]No context length found. Available metadata keys:[/yellow]")
             for key in sorted(info["all_metadata_keys"]):
                 console.print(f"  [dim]{key}[/dim]")
 
@@ -959,7 +970,7 @@ def show_model(
 
     # Show RAM requirements
     try:
-        ram_reqs = estimate_gguf_ram_requirements(file_path, verbose=False)
+        ram_reqs = estimate_gguf_ram_requirements(str(file_path), verbose=False)
         if ram_reqs:
             # Get system RAM for comparison
             system_ram = get_system_ram()
@@ -1082,7 +1093,7 @@ def list_running_models() -> None:
         console.print("[yellow]No models currently running.[/yellow]")
         return
 
-    table = Table(title="Running Models", box="SIMPLE")
+    table = Table(title="Running Models", box=SIMPLE)
     table.add_column("Name", style="cyan")
     table.add_column("Status", style="green")
 
@@ -1104,7 +1115,7 @@ def chat(
     import base64
     import re
     try:
-        from PIL import Image
+        from PIL import Image  # type: ignore
         import io
     except ImportError:
         console.print("[yellow]PIL not installed. Image support will be limited.[/yellow]")
@@ -1161,7 +1172,8 @@ def chat(
             quant_type = detect_quantization_from_filename(filename)
 
             # Try to estimate RAM requirements from the model file
-            ram_reqs = estimate_gguf_ram_requirements(model_path, verbose=False)
+            path_str = str(model_path)
+            ram_reqs = estimate_gguf_ram_requirements(path_str, verbose=False)
             if ram_reqs:
                 # Use detected quantization or fall back to Q4_K_M
                 quant_to_use = quant_type if quant_type and quant_type in ram_reqs else "Q4_K_M"
@@ -1180,7 +1192,7 @@ def chat(
     # Fall back to size-based estimation if needed
     if ram_requirement == "Unknown":
         for size, ram in FALLBACK_RAM_REQUIREMENTS.items():
-            if size in model_name:
+            if isinstance(model_name, str) and size in model_name:
                 ram_requirement = ram
                 console.print(f"[yellow]This model requires approximately {ram_requirement} of RAM (estimated from model name)[/yellow]")
                 break
@@ -1194,7 +1206,8 @@ def chat(
             if quant_to_use in ram_reqs:
                 # Get RAM requirement with default context
                 base_ram = ram_reqs[quant_to_use]
-                ctx_ram = ram_reqs.get("context_overhead", {}).get("Context 4096", 0)
+                context_overhead = ram_reqs.get("context_overhead", {})
+                ctx_ram = context_overhead.get("Context 4096", 0) if isinstance(context_overhead, dict) else 0
                 total_ram = base_ram + ctx_ram
 
                 if total_ram > system_ram:
@@ -1231,7 +1244,7 @@ def chat(
 
     # Load the model with 4096 context by default
     try:
-        llm = LLMInterface(model_name)
+        llm = LLMInterface(str(model_name))
         # Prioritize user-provided context, otherwise use 4096
         n_ctx_to_load = n_ctx or 4096
         llm.load_model(
@@ -1315,8 +1328,8 @@ def chat(
                         console.print(f"[cyan]Maximum detected context size for this model: {detected_max_context:,}[/cyan]")
                     else:
                         # Check info.json as a fallback if detection failed during run but might exist from download
-                        model_info = model_manager.get_model_info(model_name)
-                        saved_max_ctx = model_info.get("max_context") if model_info else None
+                        model_info = model_manager.get_model_info(str(model_name))
+                        saved_max_ctx = model_info.get("max_context") if isinstance(model_info, dict) else None
                         if saved_max_ctx:
                             console.print(f"[cyan]Maximum context size (from saved info): {saved_max_ctx:,}[/cyan]")
                         else:
@@ -1347,9 +1360,9 @@ def chat(
                         messages = [{"role": "system", "content": system_prompt}]
 
                     # Print confirmation that it's been applied
-                    console.print(f"[yellow]System prompt set to:[/yellow]")
+                    console.print("[yellow]System prompt set to:[/yellow]")
                     console.print(f"[cyan]\"{system_prompt}\"[/cyan]")
-                    console.print(f"[green]System prompt applied. Next responses will follow this instruction.[/green]")
+                    console.print("[green]System prompt applied. Next responses will follow this instruction.[/green]")
                 elif setting == "context":
                     try:
                         context_size = int(value)
@@ -1457,14 +1470,29 @@ def chat(
 
         # Process the stream with ghost text effect
         for chunk in stream:
-            if "choices" in chunk and len(chunk["choices"]) > 0:
-                delta = chunk["choices"][0].get("delta", {})
-                if "content" in delta and delta["content"] is not None:
-                    token = delta["content"]
-                    response_buffer += token
-                    
-                    for char in token:
-                        console.print(char, end="", highlight=True)
+            # Be defensive: stream items may not always be dicts
+            if not isinstance(chunk, dict):
+                continue
+
+            choices = chunk.get("choices")
+            if not isinstance(choices, list) or len(choices) == 0:
+                continue
+
+            first_choice = choices[0]
+            if not isinstance(first_choice, dict):
+                continue
+
+            delta = first_choice.get("delta", {})
+            if not isinstance(delta, dict):
+                continue
+
+            content = delta.get("content")
+            if content is not None:
+                token = content
+                response_buffer += token
+
+                for char in token:
+                    console.print(char, end="", highlight=True)
         
         # Add a newline after streaming is complete
         console.print("")
@@ -1577,7 +1605,7 @@ def quantize_command(
             )
 
             # Show results
-            console.print(f"\n[bold green]Successfully quantized model to:[/bold green]")
+            console.print("\n[bold green]Successfully quantized model to:[/bold green]")
             for f in output_files:
                 console.print(f"  - {f}")
 
@@ -1592,7 +1620,7 @@ def quantize_command(
                         console.print(f"\n[cyan]Final quantization type: {quant_type}[/cyan]")
 
                     # Show RAM requirements for quantized model
-                    ram_reqs = estimate_gguf_ram_requirements(output_path, verbose=False)
+                    ram_reqs = estimate_gguf_ram_requirements(str(output_path), verbose=False)
                     if ram_reqs and quant_type in ram_reqs:
                         ram_gb = ram_reqs[quant_type]
                         ram_requirement = get_ram_requirement_string(ram_gb, colorize=True)

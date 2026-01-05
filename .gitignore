@@ -123,3 +123,6 @@ dmypy.json
 .inferno/
 models/
 .qodo
+.zencoder
+.zenflow
+.ruff_cache/

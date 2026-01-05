@@ -101,10 +101,14 @@ class GGUFReader:
         Returns:
             The unpacked value
         """
-        return struct.unpack(
-            self.value_packing.get(value_type),
-            file.read(self.value_lengths.get(value_type))
-        )[0]
+        fmt = self.value_packing.get(value_type)
+        size = self.value_lengths.get(value_type)
+        if fmt is None or size is None:
+            raise ValueError(f"Unsupported GGUF value type: {value_type}")
+        data = file.read(size)
+        if len(data) != size:
+            raise EOFError(f"Failed to read {size} bytes for {value_type} (got {len(data)})")
+        return struct.unpack(fmt, data)[0]
 
     def _get_single_value(self, value_type: GGUFValueType, file: BufferedReader) -> Union[str, int, float, bool]:
         """
@@ -124,15 +128,19 @@ class GGUFReader:
             try:
                 value = value.decode("utf-8")
             except UnicodeDecodeError:
-                print(f"Warning: UnicodeDecodeError while reading a string from GGUF metadata")
+                print("Warning: UnicodeDecodeError while reading a string from GGUF metadata")
                 value = ''
         else:
             # Check if value_type is valid before unpacking
             if value_type not in self.value_packing:
                  raise ValueError(f"Unsupported GGUF value type: {value_type}")
-            fmt = self.value_packing.get(value_type)
-            size = self.value_lengths.get(value_type)
-            value = struct.unpack(fmt, file.read(size))[0]
+            # value_type has been validated to exist in value_packing/value_lengths
+            fmt = self.value_packing[value_type]
+            size = self.value_lengths[value_type]
+            data = file.read(size)
+            if len(data) != size:
+                raise EOFError(f"Failed to read {size} bytes for {value_type} (got {len(data)})")
+            value = struct.unpack(fmt, data)[0]
         return value
 
     def read_metadata(self) -> Dict[str, Any]:
@@ -172,7 +180,10 @@ class GGUFReader:
                 self.kv_count = self._unpack(GGUFValueType.UINT32, file=file)
 
             # Read all metadata key-value pairs
-            for _ in range(self.kv_count):
+            if self.kv_count is None:
+                raise ValueError("Failed to read kv_count from GGUF file")
+            kv_count_int = int(self.kv_count)
+            for _ in range(kv_count_int):
                 # Read key
                 if self.version == 3:
                     key_length = self._unpack(GGUFValueType.UINT64, file=file)
@@ -769,52 +780,131 @@ def simple_gguf_info(model_path: str) -> Dict[str, Any]:
                         # Read value based on type (simplified error handling for brevity)
                         value = None
                         try:
-                            if val_type == GGUFValueType.UINT8: value = struct.unpack('<B', mm.read(1))[0]
-                            elif val_type == GGUFValueType.INT8: value = struct.unpack('<b', mm.read(1))[0]
-                            elif val_type == GGUFValueType.UINT16: value = struct.unpack('<H', mm.read(2))[0]
-                            elif val_type == GGUFValueType.INT16: value = struct.unpack('<h', mm.read(2))[0]
-                            elif val_type == GGUFValueType.UINT32: value = struct.unpack('<I', mm.read(4))[0]
-                            elif val_type == GGUFValueType.INT32: value = struct.unpack('<i', mm.read(4))[0]
-                            elif val_type == GGUFValueType.FLOAT32: value = struct.unpack('<f', mm.read(4))[0]
-                            elif val_type == GGUFValueType.BOOL: value = struct.unpack('<?', mm.read(1))[0]
+                            if val_type == GGUFValueType.UINT8:
+                                data = mm.read(1)
+                                if len(data) < 1:
+                                    metadata[f"ERROR_short_uint8_{i}"] = f"Failed to read UINT8 for key '{key}'"
+                                    break
+                                value = struct.unpack('<B', data)[0]
+                            elif val_type == GGUFValueType.INT8:
+                                data = mm.read(1)
+                                if len(data) < 1:
+                                    metadata[f"ERROR_short_int8_{i}"] = f"Failed to read INT8 for key '{key}'"
+                                    break
+                                value = struct.unpack('<b', data)[0]
+                            elif val_type == GGUFValueType.UINT16:
+                                data = mm.read(2)
+                                if len(data) < 2:
+                                    metadata[f"ERROR_short_uint16_{i}"] = f"Failed to read UINT16 for key '{key}'"
+                                    break
+                                value = struct.unpack('<H', data)[0]
+                            elif val_type == GGUFValueType.INT16:
+                                data = mm.read(2)
+                                if len(data) < 2:
+                                    metadata[f"ERROR_short_int16_{i}"] = f"Failed to read INT16 for key '{key}'"
+                                    break
+                                value = struct.unpack('<h', data)[0]
+                            elif val_type == GGUFValueType.UINT32:
+                                data = mm.read(4)
+                                if len(data) < 4:
+                                    metadata[f"ERROR_short_uint32_{i}"] = f"Failed to read UINT32 for key '{key}'"
+                                    break
+                                value = struct.unpack('<I', data)[0]
+                            elif val_type == GGUFValueType.INT32:
+                                data = mm.read(4)
+                                if len(data) < 4:
+                                    metadata[f"ERROR_short_int32_{i}"] = f"Failed to read INT32 for key '{key}'"
+                                    break
+                                value = struct.unpack('<i', data)[0]
+                            elif val_type == GGUFValueType.FLOAT32:
+                                data = mm.read(4)
+                                if len(data) < 4:
+                                    metadata[f"ERROR_short_float32_{i}"] = f"Failed to read FLOAT32 for key '{key}'"
+                                    break
+                                value = struct.unpack('<f', data)[0]
+                            elif val_type == GGUFValueType.BOOL:
+                                data = mm.read(1)
+                                if len(data) < 1:
+                                    metadata[f"ERROR_short_bool_{i}"] = f"Failed to read BOOL for key '{key}'"
+                                    break
+                                value = struct.unpack('<?', data)[0]
                             elif val_type == GGUFValueType.STRING:
-                                str_len = struct.unpack('<Q', mm.read(8))[0]
+                                str_len_bytes = mm.read(8)
+                                if len(str_len_bytes) < 8:
+                                    metadata[f"ERROR_str_len_{i}"] = f"Failed to read string length for key '{key}'"
+                                    break
+                                str_len = struct.unpack('<Q', str_len_bytes)[0]
                                 str_bytes = mm.read(str_len)
+                                if len(str_bytes) != str_len:
+                                    metadata[f"ERROR_str_read_{i}"] = f"Failed to read string bytes for key '{key}'"
+                                    break
                                 value = str_bytes.decode('utf-8', errors='replace')
-                            elif val_type == GGUFValueType.UINT64: value = struct.unpack('<Q', mm.read(8))[0]
-                            elif val_type == GGUFValueType.INT64: value = struct.unpack('<q', mm.read(8))[0]
-                            elif val_type == GGUFValueType.FLOAT64: value = struct.unpack('<d', mm.read(8))[0]
+                            elif val_type == GGUFValueType.UINT64:
+                                data = mm.read(8)
+                                if len(data) < 8:
+                                    metadata[f"ERROR_short_uint64_{i}"] = f"Failed to read UINT64 for key '{key}'"
+                                    break
+                                value = struct.unpack('<Q', data)[0]
+                            elif val_type == GGUFValueType.INT64:
+                                data = mm.read(8)
+                                if len(data) < 8:
+                                    metadata[f"ERROR_short_int64_{i}"] = f"Failed to read INT64 for key '{key}'"
+                                    break
+                                value = struct.unpack('<q', data)[0]
+                            elif val_type == GGUFValueType.FLOAT64:
+                                data = mm.read(8)
+                                if len(data) < 8:
+                                    metadata[f"ERROR_short_float64_{i}"] = f"Failed to read FLOAT64 for key '{key}'"
+                                    break
+                                value = struct.unpack('<d', data)[0]
                             elif val_type == GGUFValueType.ARRAY:
                                 arr_type = struct.unpack('<I', mm.read(4))[0]
                                 if version == 3:
                                     arr_len = struct.unpack('<Q', mm.read(8))[0]
                                 elif version == 2:
                                     arr_len = struct.unpack('<I', mm.read(4))[0]
-                                    mm.read(4) # Skip alignment padding
+                                    mm.read(4)  # Skip alignment padding
 
                                 # Simplified array handling: read if small, otherwise skip
-                                if arr_len < 100: # Arbitrary limit
+                                if arr_len < 100:  # Arbitrary limit
                                     arr_values = []
-                                    elem_size = GGUFReader.value_lengths.get(GGUFValueType(arr_type))
-                                    if elem_size:
-                                        fmt = GGUFReader.value_packing.get(GGUFValueType(arr_type))
+                                    try:
+                                        elem_type = GGUFValueType(arr_type)
+                                    except ValueError:
+                                        metadata[f"ERROR_array_unknown_elem_{i}"] = f"Unknown array element type {arr_type} for key '{key}'"
+                                        break
+
+                                    elem_size = GGUFReader.value_lengths.get(elem_type)
+                                    fmt = GGUFReader.value_packing.get(elem_type)
+
+                                    if elem_size and fmt:
                                         for _ in range(arr_len):
-                                            arr_values.append(struct.unpack(fmt, mm.read(elem_size))[0])
-                                        value = arr_values
-                                    elif arr_type == GGUFValueType.STRING: # Handle string array
+                                            data = mm.read(elem_size)
+                                            if len(data) != elem_size:
+                                                metadata[f"ERROR_array_elem_short_{i}"] = f"Failed to read array element bytes for key '{key}'"
+                                                break
+                                            arr_values.append(struct.unpack(fmt, data)[0])
+                                        else:
+                                            value = arr_values
+                                    elif elem_type == GGUFValueType.STRING:
                                         for _ in range(arr_len):
-                                            str_len = struct.unpack('<Q', mm.read(8))[0]
+                                            str_len_bytes = mm.read(8)
+                                            if len(str_len_bytes) < 8:
+                                                metadata[f"ERROR_array_str_len_{i}"] = f"Failed to read string length for array element in key '{key}'"
+                                                break
+                                            str_len = struct.unpack('<Q', str_len_bytes)[0]
                                             str_bytes = mm.read(str_len)
+                                            if len(str_bytes) != str_len:
+                                                metadata[f"ERROR_array_str_read_{i}"] = f"Failed to read string element bytes for key '{key}'"
+                                                break
                                             arr_values.append(str_bytes.decode('utf-8', errors='replace'))
-                                        value = arr_values
-                                    else: # Unknown array element type
+                                        else:
+                                            value = arr_values
+                                    else:  # Unknown array element type
                                         value = f"<ARRAY type {arr_type} len {arr_len} - Cannot read elements>"
-                                        # Attempt to skip based on known sizes (best effort)
-                                        # This part is complex and prone to errors if types are unknown.
-                                        # For simplicity, we might just break metadata reading here.
                                         metadata[f"ERROR_array_skip_{i}"] = f"Cannot reliably skip array elements of unknown type {arr_type} for key '{key}'"
-                                        break # Stop reading metadata
-                                else: # Array too large or cannot read elements
+                                        break
+                                else:  # Array too large or cannot read elements
                                     value = f"<ARRAY type {arr_type} len {arr_len} - Too large or unreadable>"
                                     # Attempt to skip based on calculated size
                                     bytes_to_skip = 0
@@ -826,7 +916,7 @@ def simple_gguf_info(model_path: str) -> Dict[str, Any]:
                                         # For simplicity, break reading here if array is large
                                         metadata[f"ERROR_array_skip_{i}"] = f"Cannot reliably skip large string array for key '{key}'"
                                         break
-                                    else: # Unknown type
+                                    else:  # Unknown type
                                         metadata[f"ERROR_array_skip_{i}"] = f"Cannot skip large array of unknown type {arr_type} for key '{key}'"
                                         break
 
@@ -840,7 +930,6 @@ def simple_gguf_info(model_path: str) -> Dict[str, Any]:
                                 metadata[f"ERROR_unknown_type_{i}"] = f"Unknown metadata value type: {val_type} for key '{key}'"
                                 # Stop processing further metadata as alignment is likely lost
                                 break
-
                             metadata[key] = value
 
                         except struct.error as se:
@@ -864,7 +953,7 @@ def simple_gguf_info(model_path: str) -> Dict[str, Any]:
                 # Extract specific information using helper functions
 
                 # Helper function to find keys by suffix (case-insensitive)
-                def find_by_suffix(suffix, default=None):
+                def find_by_suffix(suffix: str, default: Optional[Any] = None) -> Any:
                     pattern = re.compile(re.escape(suffix) + '$', re.IGNORECASE)
                     # Prioritize keys with fewer parts (e.g., 'llama.context_length' over 'a.b.llama.context_length')
                     candidates = []
@@ -877,7 +966,7 @@ def simple_gguf_info(model_path: str) -> Dict[str, Any]:
                     return default
 
                 # Helper function to find keys by contains (case-insensitive)
-                def find_by_contains(substring, default=None):
+                def find_by_contains(substring: str, default: Optional[Any] = None) -> Any:
                     pattern = re.compile(re.escape(substring), re.IGNORECASE)
                     for key, value in metadata.items():
                          if isinstance(key, str) and pattern.search(key): # Check if key is string
@@ -923,8 +1012,10 @@ def simple_gguf_info(model_path: str) -> Dict[str, Any]:
                                            find_by_suffix(".hidden_size",
                                            find_by_suffix(".dim")))
                 if result["embedding_length"] is not None:
-                    try: result["embedding_length"] = int(result["embedding_length"])
-                    except (ValueError, TypeError): result["embedding_length"] = None
+                    try:
+                        result["embedding_length"] = int(result["embedding_length"])
+                    except (ValueError, TypeError):
+                        result["embedding_length"] = None
 
 
                 # Get block count
@@ -932,8 +1023,10 @@ def simple_gguf_info(model_path: str) -> Dict[str, Any]:
                                       find_by_suffix(".n_layer",
                                       find_by_suffix(".num_layers")))
                 if result["block_count"] is not None:
-                    try: result["block_count"] = int(result["block_count"])
-                    except (ValueError, TypeError): result["block_count"] = None
+                    try:
+                        result["block_count"] = int(result["block_count"])
+                    except (ValueError, TypeError):
+                        result["block_count"] = None
 
                 # Get quantization type (prefer general.quantization_version if available)
                 quant_version = metadata.get("general.quantization_version")
@@ -952,14 +1045,18 @@ def simple_gguf_info(model_path: str) -> Dict[str, Any]:
                 result["rope_freq_base"] = find_by_suffix(".rope.freq_base",
                                          find_by_suffix(".rope_freq_base"))
                 if result["rope_freq_base"] is not None:
-                     try: result["rope_freq_base"] = float(result["rope_freq_base"])
-                     except (ValueError, TypeError): result["rope_freq_base"] = None
+                    try:
+                        result["rope_freq_base"] = float(result["rope_freq_base"])
+                    except (ValueError, TypeError):
+                        result["rope_freq_base"] = None
 
                 result["rope_freq_scale"] = find_by_suffix(".rope.freq_scale",
                                           find_by_suffix(".rope_freq_scale"))
                 if result["rope_freq_scale"] is not None:
-                     try: result["rope_freq_scale"] = float(result["rope_freq_scale"])
-                     except (ValueError, TypeError): result["rope_freq_scale"] = None
+                    try:
+                        result["rope_freq_scale"] = float(result["rope_freq_scale"])
+                    except (ValueError, TypeError):
+                        result["rope_freq_scale"] = None
 
 
                 # Get attention parameters
@@ -968,8 +1065,10 @@ def simple_gguf_info(model_path: str) -> Dict[str, Any]:
                                      find_by_suffix(".num_heads",
                                      find_by_suffix(".n_head")))) # Add n_head
                 if result["head_count"] is not None:
-                     try: result["head_count"] = int(result["head_count"])
-                     except (ValueError, TypeError): result["head_count"] = None
+                    try:
+                        result["head_count"] = int(result["head_count"])
+                    except (ValueError, TypeError):
+                        result["head_count"] = None
 
 
                 result["head_count_kv"] = find_by_suffix(".attention.head_count_kv",
@@ -977,8 +1076,10 @@ def simple_gguf_info(model_path: str) -> Dict[str, Any]:
                                         find_by_suffix(".num_kv_heads",
                                         find_by_suffix(".n_head_kv")))) # Add n_head_kv
                 if result["head_count_kv"] is not None:
-                     try: result["head_count_kv"] = int(result["head_count_kv"])
-                     except (ValueError, TypeError): result["head_count_kv"] = None
+                    try:
+                        result["head_count_kv"] = int(result["head_count_kv"])
+                    except (ValueError, TypeError):
+                        result["head_count_kv"] = None
 
 
                 # Get feed forward length
@@ -986,11 +1087,13 @@ def simple_gguf_info(model_path: str) -> Dict[str, Any]:
                                               find_by_suffix(".intermediate_size",
                                               find_by_suffix(".ffn_hidden_size"))) # Add ffn_hidden_size
                 if result["feed_forward_length"] is not None:
-                     try: result["feed_forward_length"] = int(result["feed_forward_length"])
-                     except (ValueError, TypeError): result["feed_forward_length"] = None
+                    try:
+                        result["feed_forward_length"] = int(result["feed_forward_length"])
+                    except (ValueError, TypeError):
+                        result["feed_forward_length"] = None
 
 
-    except mmap.error as me:
+    except OSError as me:
         result["error"] = f"Mmap error: {me}"
     except FileNotFoundError:
         result["error"] = f"File not found: {model_path}"
@@ -1069,7 +1172,7 @@ def debug_gguf_context_length(model_path: str) -> None:
 
                 for key, value in sorted_keys:
                     try:
-                        int_value = int(value)
+                        int(value)
                         valid = "[green]✓ Yes[/green]"
                     except (ValueError, TypeError, OverflowError):
                         valid = "[red]✗ No[/red]"
