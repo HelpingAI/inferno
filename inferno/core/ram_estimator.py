@@ -219,7 +219,7 @@ def suggest_hardware(ram_required: float) -> str:
     else:
         return f"Server-grade hardware with at least {math.ceil(ram_required*1.5)}GB RAM recommended"
 
-def detect_gpu_vram():
+def detect_gpu_vram() -> Any:
     """
     Detect available GPU VRAM if possible.
     Requires optional dependencies (nvidia-ml-py or pynvml).

@@ -179,7 +179,7 @@ class QuantizationMethod:
 class ModelQuantizer:
     """Handles model quantization operations."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize the quantizer."""
         self.models_dir = config.models_dir
 
@@ -194,10 +194,10 @@ class ModelQuantizer:
         temp_dir = tempfile.mkdtemp(prefix="inferno_llama_cpp_")
         llama_path = Path(temp_dir) / "llama.cpp"
         
-        with console.status("[bold green]Setting up llama.cpp...") as status:
+        with console.status("[bold green]Setting up llama.cpp..."):
             # Clone llama.cpp
             subprocess.run(
-                ['git', 'clone', 'https://github.com/ggerganov/llama.cpp', str(llama_path)],
+                ['git', 'clone', 'https://github.com/ggml-org/llama.cpp', str(llama_path)],
                 check=True,
                 cwd=temp_dir
             )
@@ -295,19 +295,34 @@ class ModelQuantizer:
             import subprocess
             
             with console.status("[bold green]Converting raw model to GGUF..."):
-                # Use convert.py from llama.cpp
+                # Use ggml-org/llama.cpp convert_hf_to_gguf.py when possible
                 temp_dir, build_dir = self.setup_llama_cpp()
                 try:
-                    convert_script = Path(temp_dir) / "llama.cpp" / "convert.py"
-                    subprocess.run([
-                        "python", str(convert_script),
-                        input_model,
-                        "--outfile", output_model
-                    ], check=True)
-                    
+                    llama_repo_dir = Path(temp_dir) / "llama.cpp"
+                    convert_script = llama_repo_dir / "convert_hf_to_gguf.py"
+
+                    if convert_script.is_file():
+                        # Run the newer HF->GGUF converter. Run it from the repo dir so local imports work.
+                        subprocess.run([
+                            "python", str(convert_script),
+                            input_model,
+                            "--fname-out", output_model
+                        ], check=True, cwd=str(llama_repo_dir))
+                    else:
+                        # Fall back to legacy convert.py if present
+                        legacy = llama_repo_dir / "convert.py"
+                        if legacy.is_file():
+                            subprocess.run([
+                                "python", str(legacy),
+                                input_model,
+                                "--outfile", output_model
+                            ], check=True, cwd=str(llama_repo_dir))
+                        else:
+                            raise FileNotFoundError("No convert script found in cloned llama.cpp repository")
+
                     # Now input_model is the converted GGUF
                     input_model = output_model
-                    
+
                 finally:
                     # Clean up temp dir
                     import shutil
